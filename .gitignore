@@ -1,0 +1,25 @@
+# Build artifacts and caches
+build/
+build*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+_CPack_Packages/
+CPackConfig.cmake
+CPackSourceConfig.cmake
+*.o
+*.a
+*.so
+*.so.*
+*.dll
+*.exe
+*.tar.gz
+*.zip
+compile_commands.json
+.cache/
+
+
+
+

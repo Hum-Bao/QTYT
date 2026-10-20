@@ -1,0 +1,9 @@
+{
+  "name": "lightyt",
+  "version-string": "1.0.0",
+  "description": "Ultra-lightweight native YouTube client in C++ and Qt",
+  "dependencies": [
+    "curl"
+  ]
+}
+
