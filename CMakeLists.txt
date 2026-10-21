@@ -94,6 +94,7 @@ if(Qt6_FOUND)
         src/ui/ThumbnailLoader.cpp
         src/ui/PlayerWidget.cpp
         src/ui/PlayerControlsOverlay.cpp
+        src/ui/StatsForNerdsWidget.cpp
         src/ui/MpvGlWidget.cpp
         src/ui/CookieDialog.cpp
         src/utils/AppSettings.cpp

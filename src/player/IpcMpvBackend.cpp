@@ -346,6 +346,31 @@ void IpcMpvBackend::seek(double seconds, bool relative) {
     sendJsonCommand(cmd.dump() + "\n");
 }
 
+std::string IpcMpvBackend::getPropertyString(std::string_view name) const {
+    std::lock_guard lock(m_propMutex);
+    auto it = m_stringProps.find(std::string(name));
+    return (it != m_stringProps.end()) ? it->second : std::string{};
+}
+
+double IpcMpvBackend::getPropertyDouble(std::string_view name, double defaultVal) const {
+    std::lock_guard lock(m_propMutex);
+    auto it = m_doubleProps.find(std::string(name));
+    return (it != m_doubleProps.end()) ? it->second : defaultVal;
+}
+
+int64_t IpcMpvBackend::getPropertyInt(std::string_view name, int64_t defaultVal) const {
+    std::lock_guard lock(m_propMutex);
+    auto it = m_intProps.find(std::string(name));
+    if (it != m_intProps.end()) {
+        return it->second;
+    }
+    auto itD = m_doubleProps.find(std::string(name));
+    if (itD != m_doubleProps.end()) {
+        return static_cast<int64_t>(itD->second);
+    }
+    return defaultVal;
+}
+
 void IpcMpvBackend::attachPendingAudio() {
     std::string audio;
     {
@@ -442,6 +467,17 @@ void IpcMpvBackend::observeProperties() {
     sendJsonCommand("{\"command\": [\"observe_property\", 4, \"paused-for-cache\"]}\n");
     sendJsonCommand("{\"command\": [\"observe_property\", 5, \"demuxer-cache-duration\"]}\n");
     sendJsonCommand("{\"command\": [\"observe_property\", 6, \"eof-reached\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 7, \"width\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 8, \"height\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 9, \"container-fps\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 10, \"frame-drop-count\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 11, \"decoder-frame-drop-count\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 12, \"video-codec\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 13, \"audio-codec\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 14, \"colormatrix\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 15, \"primaries\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 16, \"video-bitrate\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 17, \"audio-bitrate\"]}\n");
 }
 
 void IpcMpvBackend::sendJsonCommand(std::string_view cmd) {
@@ -571,6 +607,19 @@ void IpcMpvBackend::handleIpcMessage(std::string_view line) {
                     bool eofReached = j["data"].get<bool>();
                     if (eofReached) {
                         m_controller->setState(PlaybackState::Ended);
+                    }
+                }
+
+                if (j.contains("data")) {
+                    const auto &val = j["data"];
+                    std::lock_guard lock(m_propMutex);
+                    if (val.is_string()) {
+                        m_stringProps[name] = val.get<std::string>();
+                    } else if (val.is_number_integer()) {
+                        m_intProps[name] = val.get<int64_t>();
+                        m_doubleProps[name] = static_cast<double>(val.get<int64_t>());
+                    } else if (val.is_number()) {
+                        m_doubleProps[name] = val.get<double>();
                     }
                 }
             } else if (ev == "file-loaded") {

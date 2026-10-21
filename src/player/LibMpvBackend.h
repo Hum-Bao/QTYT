@@ -29,6 +29,10 @@ public:
     void setVolume(int volume) override;
     void seek(double seconds, bool relative) override;
 
+    [[nodiscard]] std::string getPropertyString(std::string_view name) const override;
+    [[nodiscard]] double getPropertyDouble(std::string_view name, double defaultVal = 0.0) const override;
+    [[nodiscard]] int64_t getPropertyInt(std::string_view name, int64_t defaultVal = 0) const override;
+
     [[nodiscard]] mpv_handle *getMpvHandle() const noexcept override { return m_mpv; }
     [[nodiscard]] bool hasRenderContext() const noexcept override;
 

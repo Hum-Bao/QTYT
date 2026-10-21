@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifdef _WIN32
@@ -36,6 +37,10 @@ public:
     void setVolume(int volume) override;
     void seek(double seconds, bool relative) override;
 
+    [[nodiscard]] std::string getPropertyString(std::string_view name) const override;
+    [[nodiscard]] double getPropertyDouble(std::string_view name, double defaultVal = 0.0) const override;
+    [[nodiscard]] int64_t getPropertyInt(std::string_view name, int64_t defaultVal = 0) const override;
+
 private:
     void attachPendingAudio();
     void stopInternal();
@@ -63,6 +68,11 @@ private:
 
     std::mutex m_audioMutex;
     std::string m_pendingAudioUrl;
+
+    mutable std::mutex m_propMutex;
+    std::unordered_map<std::string, std::string> m_stringProps;
+    std::unordered_map<std::string, double> m_doubleProps;
+    std::unordered_map<std::string, int64_t> m_intProps;
 };
 
 }  // namespace lightyt

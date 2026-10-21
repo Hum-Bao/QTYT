@@ -1008,11 +1008,11 @@ void testStreamResolver() {
     }
 
     // Test qualityToFormatSort and formatSort argument in buildYtDlpArgs
-    CHECK(StreamResolver::qualityToFormatSort("1080p") == "res:1080,vcodec");
-    CHECK(StreamResolver::qualityToFormatSort("720p") == "res:720,vcodec");
-    CHECK(StreamResolver::qualityToFormatSort("480p") == "res:480,vcodec");
-    CHECK(StreamResolver::qualityToFormatSort("360p") == "res:360,vcodec");
-    CHECK(StreamResolver::qualityToFormatSort("Auto") == "vcodec");
+    CHECK(StreamResolver::qualityToFormatSort("1080p") == "res:1080");
+    CHECK(StreamResolver::qualityToFormatSort("720p") == "res:720");
+    CHECK(StreamResolver::qualityToFormatSort("480p") == "res:480");
+    CHECK(StreamResolver::qualityToFormatSort("360p") == "res:360");
+    CHECK(StreamResolver::qualityToFormatSort("Auto").empty());
     CHECK(StreamResolver::qualityToFormatSort("Audio Only").empty());
 
     auto argsSorted =
@@ -1053,6 +1053,15 @@ void testStreamResolver() {
     CHECK_EQ(StreamResolver::extractVideoId("&v=dQw4w9WgXcQ"), "dQw4w9WgXcQ");
     CHECK_EQ(StreamResolver::extractVideoId("https://youtu.be/dQw4w9WgXcQ/extra"), "dQw4w9WgXcQ");
     CHECK_EQ(StreamResolver::extractVideoId("-abcdefghij"), "-abcdefghij");
+
+    // Test extractItag from various URL structures
+    CHECK_EQ(StreamResolver::extractItag(
+                 "https://rr1.googlevideo.com/videoplayback?expire=123&itag=137&source=youtube"),
+             "137");
+    CHECK_EQ(StreamResolver::extractItag("https://rr2.googlevideo.com/videoplayback?itag=248&expire=123"), "248");
+    CHECK_EQ(StreamResolver::extractItag("https://rr3.googlevideo.com/videoplayback/itag/251/expire/123"), "251");
+    CHECK_EQ(StreamResolver::extractItag("https://rr4.googlevideo.com/videoplayback?expire=123"), "");
+    CHECK_EQ(StreamResolver::extractItag(""), "");
 
     // Verify yt-dlp discovery checks and prioritizes lib/ directory
     auto exeDir = lightyt::paths::getExecutableDir();
@@ -1824,6 +1833,15 @@ void testPlayerControllerStateAndEvents() {
     CHECK_EQ(controller.getVolume(), 0);
     controller.setVolume(75);
     CHECK_EQ(controller.getVolume(), 75);
+
+    // Test getPlaybackStats defaults on uninitialized player
+    auto initialStats = controller.getPlaybackStats();
+    CHECK_EQ(initialStats.videoWidth, 0);
+    CHECK_EQ(initialStats.videoHeight, 0);
+    CHECK_EQ(initialStats.fps, 0.0);
+    CHECK_EQ(initialStats.droppedFrames, 0);
+    CHECK(initialStats.videoCodec.empty());
+    CHECK(initialStats.audioCodec.empty());
 
     // Event callbacks
     PlaybackState lastState = PlaybackState::Idle;

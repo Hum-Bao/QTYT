@@ -22,6 +22,7 @@ class YouTubeClient;
 class MpvGlWidget;
 class QScrollArea;
 class PlayerControlsOverlay;
+class StatsForNerdsWidget;
 
 class PlayerWidget : public QWidget {
     Q_OBJECT
@@ -73,6 +74,7 @@ private:
     MpvGlWidget *m_videoSurface = nullptr;
     QLabel *m_errorBanner = nullptr;
     PlayerControlsOverlay *m_controlsOverlay = nullptr;
+    StatsForNerdsWidget *m_statsWidget = nullptr;
     QWidget *m_metadataContainer = nullptr;
     QLabel *m_titleLabel = nullptr;
     QLabel *m_authorLabel = nullptr;
@@ -110,6 +112,8 @@ private:
     VideoItem m_currentItem;
     std::string m_cookieFilePath;
     bool m_allowAv1 = false;
+    std::string m_currentVideoItag;
+    std::string m_currentAudioItag;
     std::unique_ptr<PlayerController> m_player;
     YouTubeClient *m_client = nullptr;
     double m_lastReportedWatchTime = 0.0;
@@ -128,6 +132,9 @@ private:
     void updatePlayerLayout();
     void updateLikeDislikeUi();
     void updateDescriptionUi();
+    void toggleStatsForNerds();
+    void showPlayerContextMenu(const QPoint &globalPos);
+    void updateStatsContext();
     void loadChannelAvatar(const std::string &avatarUrl);
     void setChannelAvatarPixmap(const QPixmap &pix);
     [[nodiscard]] double effectiveDuration() const noexcept;

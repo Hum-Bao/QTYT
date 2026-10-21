@@ -22,6 +22,13 @@ public:
     virtual void setPropertyFlag(std::string_view name, bool val) = 0;
     virtual void setVolume(int volume) = 0;
     virtual void seek(double seconds, bool relative) = 0;
+    [[nodiscard]] virtual std::string getPropertyString(std::string_view name) const { return {}; }
+    [[nodiscard]] virtual double getPropertyDouble(std::string_view name, double defaultVal = 0.0) const {
+        return defaultVal;
+    }
+    [[nodiscard]] virtual int64_t getPropertyInt(std::string_view name, int64_t defaultVal = 0) const {
+        return defaultVal;
+    }
     [[nodiscard]] virtual mpv_handle *getMpvHandle() const noexcept { return nullptr; }
     [[nodiscard]] virtual bool hasRenderContext() const noexcept { return false; }
 };

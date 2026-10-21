@@ -14,6 +14,20 @@
 
 enum class PlaybackState : uint8_t { Idle, Resolving, Buffering, Playing, Paused, Ended, Error };
 
+struct PlayerPlaybackStats {
+    int videoWidth = 0;
+    int videoHeight = 0;
+    double fps = 0.0;
+    int64_t droppedFrames = 0;
+    std::string videoCodec;
+    std::string audioCodec;
+    std::string colorMatrix;
+    std::string colorPrimaries;
+    int64_t videoBitrate = 0;
+    int64_t audioBitrate = 0;
+    double bufferSeconds = 0.0;
+};
+
 struct PlayerEvents {
     std::function<void(PlaybackState)> onState;
     std::function<void(double position, double duration)> onTime;
@@ -71,6 +85,7 @@ public:
     [[nodiscard]] std::string getInitError() const;
     [[nodiscard]] mpv_handle *getMpvHandle() const noexcept;
     [[nodiscard]] bool hasRenderContext() const noexcept;
+    [[nodiscard]] PlayerPlaybackStats getPlaybackStats() const;
 
     // Helper to map UI quality string to yt-dlp format string
     [[nodiscard]] static std::string qualityToFormatString(std::string_view quality, bool allowAv1 = false) {

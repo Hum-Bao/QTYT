@@ -157,6 +157,8 @@ inline const QString GlobalStyleSheet = QStringLiteral(R"(
         padding: 4px 0;
     }
     QMenu::item {
+        color: #f1f1f1;
+        background-color: transparent;
         padding: 6px 16px;
         border-radius: 4px;
         margin: 2px 4px;
@@ -164,6 +166,9 @@ inline const QString GlobalStyleSheet = QStringLiteral(R"(
     QMenu::item:selected {
         background-color: #3f3f3f;
         color: #ffffff;
+    }
+    QMenu::item:disabled {
+        color: #717171;
     }
 
     /* Status Bar */

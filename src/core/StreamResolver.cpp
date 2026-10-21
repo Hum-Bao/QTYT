@@ -230,19 +230,16 @@ std::string StreamResolver::qualityToFormatString(std::string_view quality, bool
 
 std::string StreamResolver::qualityToFormatSort(std::string_view quality) {
     if (quality == "1080p") {
-        return "res:1080,vcodec";
+        return "res:1080";
     }
     if (quality == "720p") {
-        return "res:720,vcodec";
+        return "res:720";
     }
     if (quality == "480p") {
-        return "res:480,vcodec";
+        return "res:480";
     }
     if (quality == "360p") {
-        return "res:360,vcodec";
-    }
-    if (quality == "Auto") {
-        return "vcodec";
+        return "res:360";
     }
     return "";
 }
@@ -553,28 +550,11 @@ std::vector<std::string> findAllJsRuntimes() {
     }
 }
 
-std::string_view extractItag(std::string_view url) {
-    for (std::string_view prefix : {"?itag=", "&itag=", "/itag/"}) {
-        auto pos = url.find(prefix);
-        if (pos != std::string_view::npos) {
-            auto start = pos + prefix.size();
-            auto end = start;
-            while (end < url.size() && url[end] >= '0' && url[end] <= '9') {
-                ++end;
-            }
-            if (end > start) {
-                return url.substr(start, end - start);
-            }
-        }
-    }
-    return {};
-}
-
 bool isLowResFallback(std::string_view videoUrl, std::string_view quality) {
     if (quality == "360p" || quality == "Audio Only") {
         return false;
     }
-    std::string_view itag = extractItag(videoUrl);
+    std::string itag = StreamResolver::extractItag(videoUrl);
     if (itag.empty()) {
         return false;
     }
@@ -594,6 +574,23 @@ bool isLowResFallback(std::string_view videoUrl, std::string_view quality) {
     return false;
 }
 }  // namespace
+
+std::string StreamResolver::extractItag(std::string_view url) {
+    for (std::string_view prefix : {"?itag=", "&itag=", "/itag/"}) {
+        auto pos = url.find(prefix);
+        if (pos != std::string_view::npos) {
+            auto start = pos + prefix.size();
+            auto end = start;
+            while (end < url.size() && url[end] >= '0' && url[end] <= '9') {
+                ++end;
+            }
+            if (end > start) {
+                return std::string(url.substr(start, end - start));
+            }
+        }
+    }
+    return {};
+}
 
 std::string StreamResolver::findJsRuntime() {
     auto runtimes = findAllJsRuntimes();
@@ -867,6 +864,8 @@ bool StreamResolver::resolve(std::string_view videoIdOrUrl, std::string_view qua
             info.videoUrl = urls[0];
             info.audioUrl = (urls.size() > 1) ? urls[1] : "";
             info.isDirectStream = true;
+            info.videoItag = StreamResolver::extractItag(info.videoUrl);
+            info.audioItag = StreamResolver::extractItag(info.audioUrl);
             return true;
         }
         return false;
@@ -877,8 +876,8 @@ bool StreamResolver::resolve(std::string_view videoIdOrUrl, std::string_view qua
     const bool hasCookies = !effectiveCookiePath.empty();
 
     constexpr std::string_view FAST_DEFAULT_ARGS = "youtube:player_skip=configs;player_client=default,-visionos";
-    constexpr std::string_view ANON_HD_ARGS = "youtube:player_client=web_embedded,android,default,-visionos";
-    constexpr std::string_view AUTH_HD_ARGS = "youtube:player_client=web_embedded,android,web,default,-visionos";
+    constexpr std::string_view ANON_HD_ARGS = "youtube:player_client=web_embedded,tv_downgraded,default";
+    constexpr std::string_view AUTH_HD_ARGS = "youtube:player_client=web_embedded,tv_downgraded,web_safari,web";
 
     // 1. Primary fast un-throttled extraction (anonymous VisionOS + Web default clients)
     auto result = tryYtDlp(false, FAST_DEFAULT_ARGS, 12000);

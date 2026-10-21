@@ -233,3 +233,41 @@ mpv_handle *PlayerController::getMpvHandle() const noexcept {
 bool PlayerController::hasRenderContext() const noexcept {
     return m_backend ? m_backend->hasRenderContext() : false;
 }
+
+PlayerPlaybackStats PlayerController::getPlaybackStats() const {
+    PlayerPlaybackStats stats;
+    if (!m_backend) {
+        return stats;
+    }
+
+    stats.videoWidth = static_cast<int>(m_backend->getPropertyInt("width", 0));
+    stats.videoHeight = static_cast<int>(m_backend->getPropertyInt("height", 0));
+    stats.fps = m_backend->getPropertyDouble("container-fps", 0.0);
+    if (stats.fps <= 0.0) {
+        stats.fps = m_backend->getPropertyDouble("estimated-vf-fps", 0.0);
+    }
+
+    int64_t voDrops = m_backend->getPropertyInt("frame-drop-count", 0);
+    int64_t decDrops = m_backend->getPropertyInt("decoder-frame-drop-count", 0);
+    stats.droppedFrames = voDrops + decDrops;
+
+    stats.videoCodec = m_backend->getPropertyString("video-codec");
+    if (stats.videoCodec.empty()) {
+        stats.videoCodec = m_backend->getPropertyString("video-format");
+    }
+
+    stats.audioCodec = m_backend->getPropertyString("audio-codec");
+    if (stats.audioCodec.empty()) {
+        stats.audioCodec = m_backend->getPropertyString("audio-format");
+    }
+
+    stats.colorMatrix = m_backend->getPropertyString("colormatrix");
+    stats.colorPrimaries = m_backend->getPropertyString("primaries");
+
+    stats.videoBitrate = m_backend->getPropertyInt("video-bitrate", 0);
+    stats.audioBitrate = m_backend->getPropertyInt("audio-bitrate", 0);
+
+    stats.bufferSeconds = m_backend->getPropertyDouble("demuxer-cache-duration", 0.0);
+
+    return stats;
+}

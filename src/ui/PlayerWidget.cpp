@@ -9,15 +9,19 @@
 #include "../utils/StringUtils.h"
 #include "MpvGlWidget.h"
 #include "PlayerControlsOverlay.h"
+#include "StatsForNerdsWidget.h"
 #include "ThumbnailLoader.h"
 #include "YouTubeIcons.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QContextMenuEvent>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLocale>
+#include <QMenu>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
@@ -193,6 +197,8 @@ void PlayerWidget::setupUi() {
     connect(m_controlsOverlay, &PlayerControlsOverlay::qualityChanged, this, &PlayerWidget::onQualityChanged);
     connect(m_controlsOverlay, &PlayerControlsOverlay::playbackSpeedChanged, this,
             &PlayerWidget::onPlaybackSpeedChanged);
+    connect(m_controlsOverlay, &PlayerControlsOverlay::statsForNerdsToggled, this,
+            &PlayerWidget::toggleStatsForNerds);
     connect(m_controlsOverlay, &PlayerControlsOverlay::seekingChanged, this, [this](bool seeking) {
         m_userIsSeeking = seeking;
         if (!seeking) {
@@ -207,6 +213,11 @@ void PlayerWidget::setupUi() {
     m_controlsOverlay->setVolume(AppSettings::instance().getVolume());
     m_controlsOverlay->setQuality(m_quality);
     m_controlsOverlay->setPlaybackSpeed(m_playbackSpeed);
+    m_controlsOverlay->installEventFilter(this);
+
+    m_statsWidget = new StatsForNerdsWidget(m_surfaceContainer);
+    m_statsWidget->hide();
+    m_statsWidget->move(16, 16);
 
     scrollLayout->addWidget(m_surfaceContainer);
 
@@ -739,6 +750,9 @@ void PlayerWidget::playVideo(const VideoItem &item, const QString &quality, cons
                     return;
                 }
 
+                weakThis->m_currentVideoItag = info.videoItag;
+                weakThis->m_currentAudioItag = info.audioItag;
+                weakThis->updateStatsContext();
                 weakThis->m_player->setVolume(AppSettings::instance().getVolume());
                 weakThis->m_player->playDirectStream(info.videoUrl, info.audioUrl);
             },
@@ -937,6 +951,9 @@ void PlayerWidget::onQualityChanged(const QString &quality) {
                         weakThis->m_errorBanner->show();
                         return;
                     }
+                    weakThis->m_currentVideoItag = info.videoItag;
+                    weakThis->m_currentAudioItag = info.audioItag;
+                    weakThis->updateStatsContext();
                     weakThis->m_player->playDirectStream(info.videoUrl, info.audioUrl, currentPos);
                 },
                 Qt::QueuedConnection);
@@ -956,7 +973,7 @@ void PlayerWidget::onPlaybackSpeedChanged(double speed) {
 }
 
 bool PlayerWidget::eventFilter(QObject *watched, QEvent *event) {
-    if (watched == m_surfaceContainer || watched == m_videoSurface) {
+    if (watched == m_surfaceContainer || watched == m_videoSurface || watched == m_controlsOverlay) {
         if (event->type() == QEvent::MouseMove) {
             if (m_controlsOverlay) {
                 m_controlsOverlay->showControlsAnimated();
@@ -979,12 +996,28 @@ bool PlayerWidget::eventFilter(QObject *watched, QEvent *event) {
                     m_controlsOverlay->scheduleHide(150);
                 }
             }
+        } else if (event->type() == QEvent::ContextMenu) {
+            auto *ctxEvent = static_cast<QContextMenuEvent *>(event);
+            showPlayerContextMenu(ctxEvent->globalPos());
+            return true;
         } else if (event->type() == QEvent::Resize) {
-            if (watched == m_surfaceContainer && m_controlsOverlay) {
-                constexpr int kOverlayHeight = 82;
-                m_controlsOverlay->setGeometry(0, m_surfaceContainer->height() - kOverlayHeight,
-                                               m_surfaceContainer->width(), kOverlayHeight);
-                m_controlsOverlay->raise();
+            if (watched == m_surfaceContainer) {
+                if (m_controlsOverlay) {
+                    constexpr int kOverlayHeight = 82;
+                    m_controlsOverlay->setGeometry(0, m_surfaceContainer->height() - kOverlayHeight,
+                                                   m_surfaceContainer->width(), kOverlayHeight);
+                    m_controlsOverlay->raise();
+                }
+                if (m_statsWidget) {
+                    if (m_videoSurface) {
+                        m_statsWidget->setViewportDimensions(m_videoSurface->width(), m_videoSurface->height(),
+                                                             devicePixelRatio());
+                    }
+                    m_statsWidget->clampToParent();
+                    if (m_statsWidget->isVisible()) {
+                        m_statsWidget->raise();
+                    }
+                }
             }
         }
     }
@@ -1050,6 +1083,10 @@ void PlayerWidget::keyPressEvent(QKeyEvent *event) {
     }
     case Qt::Key_F:
         emit fullscreenToggleRequested();
+        event->accept();
+        break;
+    case Qt::Key_S:
+        toggleStatsForNerds();
         event->accept();
         break;
     case Qt::Key_Greater:
@@ -1559,4 +1596,99 @@ void PlayerWidget::loadChannelAvatar(const std::string &avatarUrl) {
             },
             Qt::QueuedConnection);
     });
+}
+
+void PlayerWidget::toggleStatsForNerds() {
+    if (!m_statsWidget) {
+        return;
+    }
+    bool willShow = !m_statsWidget->isVisible();
+    if (willShow) {
+        updateStatsContext();
+        m_statsWidget->adjustSize();
+        m_statsWidget->clampToParent();
+        m_statsWidget->show();
+        m_statsWidget->raise();
+    } else {
+        m_statsWidget->hide();
+    }
+}
+
+void PlayerWidget::showPlayerContextMenu(const QPoint &globalPos) {
+    QMenu menu(this);
+    menu.setStyleSheet(
+        "QMenu {"
+        "  background-color: #212121;"
+        "  color: #f1f1f1;"
+        "  border: 1px solid rgba(255, 255, 255, 0.18);"
+        "  border-radius: 8px;"
+        "  padding: 6px 4px;"
+        "  font-size: 13px;"
+        "}"
+        "QMenu::item {"
+        "  color: #f1f1f1;"
+        "  background-color: transparent;"
+        "  padding: 7px 24px 7px 20px;"
+        "  border-radius: 4px;"
+        "  margin: 1px 2px;"
+        "}"
+        "QMenu::item:selected {"
+        "  background-color: rgba(255, 255, 255, 0.15);"
+        "  color: #ffffff;"
+        "}"
+        "QMenu::item:disabled {"
+        "  color: #717171;"
+        "}"
+        "QMenu::separator {"
+        "  height: 1px;"
+        "  background-color: rgba(255, 255, 255, 0.12);"
+        "  margin: 4px 6px;"
+        "}");
+
+    bool statsVisible = (m_statsWidget && m_statsWidget->isVisible());
+    auto *statsAction = menu.addAction(statsVisible ? "Hide stats for nerds" : "Stats for nerds");
+    if (statsVisible) {
+        statsAction->setIcon(lightyt::ui::icons::checkMark(QColor(0xf1, 0xf1, 0xf1), 14));
+    }
+    connect(statsAction, &QAction::triggered, this, &PlayerWidget::toggleStatsForNerds);
+
+    menu.addSeparator();
+
+    auto *copyUrlAction = menu.addAction("Copy video URL");
+    connect(copyUrlAction, &QAction::triggered, this, [this]() {
+        if (!m_currentItem.id.empty()) {
+            QString url = "https://www.youtube.com/watch?v=" + QString::fromStdString(m_currentItem.id);
+            QGuiApplication::clipboard()->setText(url);
+        }
+    });
+
+    auto *copyUrlAtTimeAction = menu.addAction("Copy video URL at current time");
+    connect(copyUrlAtTimeAction, &QAction::triggered, this, [this]() {
+        if (!m_currentItem.id.empty() && m_player) {
+            int64_t sec = static_cast<int64_t>(std::floor(m_player->getPosition()));
+            QString url = QString("https://www.youtube.com/watch?v=%1&t=%2s")
+                              .arg(QString::fromStdString(m_currentItem.id))
+                              .arg(sec);
+            QGuiApplication::clipboard()->setText(url);
+        }
+    });
+
+    menu.exec(globalPos);
+}
+
+void PlayerWidget::updateStatsContext() {
+    if (!m_statsWidget) {
+        return;
+    }
+    if (m_player) {
+        m_statsWidget->setPlayerController(m_player.get());
+    }
+    if (m_videoSurface) {
+        m_statsWidget->setViewportDimensions(m_videoSurface->width(), m_videoSurface->height(), devicePixelRatio());
+    }
+    QString optimal = "1920x1080@60";
+    if (!m_quality.isEmpty() && m_quality != "Auto") {
+        optimal = m_quality + "@60";
+    }
+    m_statsWidget->setVideoContext(m_currentItem.id, m_currentVideoItag, m_currentAudioItag, optimal);
 }

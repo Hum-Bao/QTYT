@@ -11,6 +11,8 @@ struct StreamInfo {
     std::string videoUrl;         // Playable video stream URL (or combined video+audio)
     std::string audioUrl;         // Optional separate audio stream URL (DASH adaptive)
     bool isDirectStream = false;  // true if resolved to direct CDN stream URLs
+    std::string videoItag;        // Extracted video stream itag (e.g. "137", "248", "399")
+    std::string audioItag;        // Extracted audio stream itag (e.g. "140", "251")
 };
 
 class StreamResolver {
@@ -44,6 +46,9 @@ public:
 
     // Extract video ID from videoIdOrUrl (strips shorts prefixes, extracts from youtube.com, youtu.be, etc.)
     [[nodiscard]] static std::string extractVideoId(std::string_view videoIdOrUrl);
+
+    // Extract format itag from stream URL (?itag=137, &itag=137, /itag/137/)
+    [[nodiscard]] static std::string extractItag(std::string_view url);
 
     // Parse URL expiration timestamp from googlevideo expire= query parameter
     [[nodiscard]] static std::chrono::steady_clock::time_point parseUrlExpiry(std::string_view url);

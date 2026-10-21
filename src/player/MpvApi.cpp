@@ -146,6 +146,7 @@ bool MpvApi::load() {
     set_wakeup_callback = lib.getSymbol<void (*)(mpv_handle *, void (*)(void *), void *)>("mpv_set_wakeup_callback");
     error_string = lib.getSymbol<const char *(*)(int)>("mpv_error_string");
     request_log_messages = lib.getSymbol<int (*)(mpv_handle *, const char *)>("mpv_request_log_messages");
+    mpv_free = lib.getSymbol<void (*)(void *)>("mpv_free");
 
     // Optional mpv_render_context functions
     render_context_create =

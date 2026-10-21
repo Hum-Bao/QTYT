@@ -29,6 +29,7 @@ struct MpvApi {
     void (*set_wakeup_callback)(mpv_handle *, void (*)(void *), void *) = nullptr;
     const char *(*error_string)(int) = nullptr;
     int (*request_log_messages)(mpv_handle *, const char *) = nullptr;
+    void (*mpv_free)(void *) = nullptr;
 
     // mpv_render_context API
     int (*render_context_create)(mpv_render_context **, mpv_handle *, mpv_render_param *) = nullptr;

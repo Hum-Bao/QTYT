@@ -216,6 +216,46 @@ void LibMpvBackend::seek(double seconds, bool relative) {
     command(args);
 }
 
+std::string LibMpvBackend::getPropertyString(std::string_view name) const {
+    auto &api = getMpvApi();
+    if (m_mpv == nullptr || api.get_property == nullptr) {
+        return {};
+    }
+    char *str = nullptr;
+    if (api.get_property(m_mpv, std::string(name).c_str(), MPV_FORMAT_STRING, &str) >= 0 && str != nullptr) {
+        std::string result(str);
+        if (api.mpv_free != nullptr) {
+            api.mpv_free(str);
+        }
+        return result;
+    }
+    return {};
+}
+
+double LibMpvBackend::getPropertyDouble(std::string_view name, double defaultVal) const {
+    auto &api = getMpvApi();
+    if (m_mpv == nullptr || api.get_property == nullptr) {
+        return defaultVal;
+    }
+    double val = defaultVal;
+    if (api.get_property(m_mpv, std::string(name).c_str(), MPV_FORMAT_DOUBLE, &val) >= 0) {
+        return val;
+    }
+    return defaultVal;
+}
+
+int64_t LibMpvBackend::getPropertyInt(std::string_view name, int64_t defaultVal) const {
+    auto &api = getMpvApi();
+    if (m_mpv == nullptr || api.get_property == nullptr) {
+        return defaultVal;
+    }
+    int64_t val = defaultVal;
+    if (api.get_property(m_mpv, std::string(name).c_str(), MPV_FORMAT_INT64, &val) >= 0) {
+        return val;
+    }
+    return defaultVal;
+}
+
 void LibMpvBackend::attachPendingAudio() {
     std::string audio;
     {

@@ -482,6 +482,28 @@ void PlayerSettingsPopup::buildMainMenu() {
     });
     lay->addWidget(qualityBtn);
 
+    // Row 3: Stats for nerds
+    auto *statsBtn = new QPushButton(m_mainPage);
+    statsBtn->setCursor(Qt::PointingHandCursor);
+    statsBtn->setFocusPolicy(Qt::NoFocus);
+    statsBtn->setFixedHeight(36);
+    statsBtn->setStyleSheet(
+        "QPushButton { background: transparent; border: none; padding: 0px 8px; border-radius: 4px; margin: 1px 4px; }"
+        "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
+        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.2); }");
+    auto *statsRow = new QHBoxLayout(statsBtn);
+    statsRow->setContentsMargins(4, 0, 4, 0);
+    statsRow->setSpacing(4);
+    auto *statsTitle = new QLabel("Stats for nerds", statsBtn);
+    statsTitle->setStyleSheet("color: #f1f1f1; font-size: 13px; font-weight: 500; background: transparent;");
+    statsRow->addWidget(statsTitle);
+    statsRow->addStretch(1);
+    connect(statsBtn, &QPushButton::clicked, this, [this]() {
+        emit statsForNerdsToggled();
+        close();
+    });
+    lay->addWidget(statsBtn);
+
     m_stack->addWidget(m_mainPage);
 }
 
@@ -835,6 +857,8 @@ void PlayerControlsOverlay::setupUi() {
         m_playbackSpeed = s;
         emit playbackSpeedChanged(s);
     });
+    connect(m_settingsPopup, &PlayerSettingsPopup::statsForNerdsToggled, this,
+            &PlayerControlsOverlay::statsForNerdsToggled);
     connect(m_settingsPopup, &PlayerSettingsPopup::popupHidden, this, [this]() {
         m_isMenuOpen = false;
         if (m_isPlaying) {

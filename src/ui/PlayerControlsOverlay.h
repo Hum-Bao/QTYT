@@ -92,6 +92,7 @@ public:
 signals:
     void qualitySelected(const QString &quality);
     void playbackSpeedSelected(double speed);
+    void statsForNerdsToggled();
     void popupHidden();
 
 protected:
@@ -162,6 +163,7 @@ signals:
     void controlsVisibilityChanged(bool visible);
     void qualityChanged(const QString &quality);
     void playbackSpeedChanged(double speed);
+    void statsForNerdsToggled();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
