@@ -230,16 +230,19 @@ std::string StreamResolver::qualityToFormatString(std::string_view quality, bool
 
 std::string StreamResolver::qualityToFormatSort(std::string_view quality) {
     if (quality == "1080p") {
-        return "res:1080";
+        return "res:1080,vcodec";
     }
     if (quality == "720p") {
-        return "res:720";
+        return "res:720,vcodec";
     }
     if (quality == "480p") {
-        return "res:480";
+        return "res:480,vcodec";
     }
     if (quality == "360p") {
-        return "res:360";
+        return "res:360,vcodec";
+    }
+    if (quality == "Auto") {
+        return "vcodec";
     }
     return "";
 }
@@ -873,9 +876,9 @@ bool StreamResolver::resolve(std::string_view videoIdOrUrl, std::string_view qua
 
     const bool hasCookies = !effectiveCookiePath.empty();
 
-    constexpr std::string_view FAST_DEFAULT_ARGS = "youtube:player_skip=configs;player_client=default";
-    constexpr std::string_view ANON_HD_ARGS = "youtube:player_client=tv_downgraded,web_embedded,default";
-    constexpr std::string_view AUTH_HD_ARGS = "youtube:player_client=web_embedded,tv_downgraded,web_safari,web";
+    constexpr std::string_view FAST_DEFAULT_ARGS = "youtube:player_skip=configs;player_client=default,-visionos";
+    constexpr std::string_view ANON_HD_ARGS = "youtube:player_client=web_embedded,android,default,-visionos";
+    constexpr std::string_view AUTH_HD_ARGS = "youtube:player_client=web_embedded,android,web,default,-visionos";
 
     // 1. Primary fast un-throttled extraction (anonymous VisionOS + Web default clients)
     auto result = tryYtDlp(false, FAST_DEFAULT_ARGS, 12000);

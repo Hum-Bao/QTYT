@@ -1008,11 +1008,11 @@ void testStreamResolver() {
     }
 
     // Test qualityToFormatSort and formatSort argument in buildYtDlpArgs
-    CHECK(StreamResolver::qualityToFormatSort("1080p") == "res:1080");
-    CHECK(StreamResolver::qualityToFormatSort("720p") == "res:720");
-    CHECK(StreamResolver::qualityToFormatSort("480p") == "res:480");
-    CHECK(StreamResolver::qualityToFormatSort("360p") == "res:360");
-    CHECK(StreamResolver::qualityToFormatSort("Auto").empty());
+    CHECK(StreamResolver::qualityToFormatSort("1080p") == "res:1080,vcodec");
+    CHECK(StreamResolver::qualityToFormatSort("720p") == "res:720,vcodec");
+    CHECK(StreamResolver::qualityToFormatSort("480p") == "res:480,vcodec");
+    CHECK(StreamResolver::qualityToFormatSort("360p") == "res:360,vcodec");
+    CHECK(StreamResolver::qualityToFormatSort("Auto") == "vcodec");
     CHECK(StreamResolver::qualityToFormatSort("Audio Only").empty());
 
     auto argsSorted =
