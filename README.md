@@ -46,7 +46,7 @@ QTYT relies on a few external tools for media extraction and playback:
 
 | Dependency | Purpose | Recommended Version |
 | :--- | :--- | :--- |
-| **`yt-dlp`** | Extracts direct adaptive audio/video stream URLs | `2025.05.22`+ (or bundled in `lib/`) |
+| **`yt-dlp`** | Extracts direct adaptive audio/video stream URLs | Latest release |
 | **`mpv` / `libmpv`** | Hardware-accelerated media rendering | `libmpv` (v2) or standalone `mpv` |
 | **`libcurl`** | Network communication with YouTube's InnerTube API | Latest release |
 | **PO Token (POT) Provider** | Bypasses YouTube CDN throttling on AV1/VP9 streams | `bgutil-pot` & `bgutil-ytdlp-pot-provider` plugin |
