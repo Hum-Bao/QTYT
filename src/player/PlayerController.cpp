@@ -268,6 +268,10 @@ PlayerPlaybackStats PlayerController::getPlaybackStats() const {
     stats.audioBitrate = m_backend->getPropertyInt("audio-bitrate", 0);
 
     stats.bufferSeconds = m_backend->getPropertyDouble("demuxer-cache-duration", 0.0);
+    stats.cacheSpeedBytes = m_backend->getPropertyInt("cache-speed", 0);
+    if (stats.cacheSpeedBytes <= 0) {
+        stats.cacheSpeedBytes = m_backend->getPropertyInt("demuxer-cache-state/raw-input-rate", 0);
+    }
 
     return stats;
 }

@@ -92,10 +92,10 @@ public:
 signals:
     void qualitySelected(const QString &quality);
     void playbackSpeedSelected(double speed);
-    void statsForNerdsToggled();
     void popupHidden();
 
 protected:
+    void paintEvent(QPaintEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
 
@@ -105,6 +105,7 @@ private:
     void rebuildQualityMenu();
     void rebuildSpeedMenu();
     void reposition();
+    [[nodiscard]] int calculateDesiredHeight() const;
 
     QWidget *m_targetBtn = nullptr;
     QStackedWidget *m_stack = nullptr;

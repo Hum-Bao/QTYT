@@ -61,6 +61,7 @@ private:
     int m_viewportW = 0;
     int m_viewportH = 0;
     qreal m_dpr = 1.0;
+    int64_t m_lastConnectionSpeedKbps = 0;
 
     // Drag tracking
     bool m_isDragging = false;

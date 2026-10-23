@@ -1009,15 +1009,33 @@ void testStreamResolver() {
 
     // Test qualityToFormatSort and formatSort argument in buildYtDlpArgs
     CHECK(StreamResolver::qualityToFormatSort("1080p") == "res:1080");
+    CHECK(StreamResolver::qualityToFormatSort("1080p", false) == "res:1080");
+    CHECK(StreamResolver::qualityToFormatSort("1080p", true) == "res:1080,vcodec:av01,vp09,avc1");
     CHECK(StreamResolver::qualityToFormatSort("720p") == "res:720");
+    CHECK(StreamResolver::qualityToFormatSort("720p", false) == "res:720");
+    CHECK(StreamResolver::qualityToFormatSort("720p", true) == "res:720,vcodec:av01,vp09,avc1");
     CHECK(StreamResolver::qualityToFormatSort("480p") == "res:480");
+    CHECK(StreamResolver::qualityToFormatSort("480p", true) == "res:480,vcodec:av01,vp09,avc1");
     CHECK(StreamResolver::qualityToFormatSort("360p") == "res:360");
+    CHECK(StreamResolver::qualityToFormatSort("360p", true) == "res:360,vcodec:av01,vp09,avc1");
     CHECK(StreamResolver::qualityToFormatSort("Auto").empty());
     CHECK(StreamResolver::qualityToFormatSort("Audio Only").empty());
 
+    // Test JS runtime and POT provider detection
+    bool hasJs = StreamResolver::hasJsRuntime();
+    std::string jsPath = StreamResolver::findJsRuntime();
+    if (hasJs) {
+        CHECK(!jsPath.empty());
+    }
+    bool hasPot = StreamResolver::hasPotProvider();
+    std::string potPath = StreamResolver::findPotProvider();
+    if (hasPot) {
+        CHECK(!potPath.empty());
+    }
+
     auto argsSorted =
         StreamResolver::buildYtDlpArgs("yt-dlp", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "best", false, "",
-                                       "youtube:player_skip=configs;player_client=default,-visionos", "res:1080");
+                                       "youtube:player_skip=configs;player_client=default", "res:1080");
     bool foundFormatSort = false;
     for (size_t i = 0; i < argsSorted.size(); ++i) {
         if (argsSorted[i] == "-S" && i + 1 < argsSorted.size() && argsSorted[i + 1] == "res:1080") {
@@ -1151,7 +1169,7 @@ void testCookieDomainAndExpiry() {
 void testCookieManagerUpdateFromSetCookieAndResponse() {
     CookieManager mgr;
     mgr.updateFromSetCookie(
-        "SIDCC=fresh_sidcc_123; Domain=.youtube.com; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Secure; HttpOnly");
+        "SIDCC=fresh_sidcc_123; Domain=.youtube.com; Path=/; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Secure; HttpOnly");
     CHECK_EQ(mgr.getCookie("SIDCC"), "fresh_sidcc_123");
 
     HttpResponse resp{
@@ -1842,6 +1860,10 @@ void testPlayerControllerStateAndEvents() {
     CHECK_EQ(initialStats.droppedFrames, 0);
     CHECK(initialStats.videoCodec.empty());
     CHECK(initialStats.audioCodec.empty());
+    CHECK_EQ(initialStats.videoBitrate, 0);
+    CHECK_EQ(initialStats.audioBitrate, 0);
+    CHECK_EQ(initialStats.bufferSeconds, 0.0);
+    CHECK_EQ(initialStats.cacheSpeedBytes, 0);
 
     // Event callbacks
     PlaybackState lastState = PlaybackState::Idle;

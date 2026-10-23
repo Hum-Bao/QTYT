@@ -20,25 +20,6 @@
 
 namespace {
 
-class DynamicStackedWidget : public QStackedWidget {
-public:
-    using QStackedWidget::QStackedWidget;
-
-    [[nodiscard]] QSize sizeHint() const override {
-        if (currentWidget()) {
-            return currentWidget()->sizeHint();
-        }
-        return QStackedWidget::sizeHint();
-    }
-
-    [[nodiscard]] QSize minimumSizeHint() const override {
-        if (currentWidget()) {
-            return currentWidget()->minimumSizeHint();
-        }
-        return QStackedWidget::minimumSizeHint();
-    }
-};
-
 const char *kIconBtnQss = "QPushButton {"
                           "  background-color: transparent;"
                           "  border: none;"
@@ -292,28 +273,58 @@ void PlayerScrubber::leaveEvent(QEvent *event) {
 }
 
 // ============================================================================
+// ============================================================================
 // PlayerSettingsPopup Implementation
 // ============================================================================
 
+namespace {
+
+constexpr int kPopupWidth = 250;
+constexpr int kRowHeight = 38;
+constexpr int kHeaderHeight = 38;
+constexpr int kSepHeight = 1;
+constexpr int kSepMarginV = 4;
+constexpr int kPadTop = 6;
+constexpr int kPadBottom = 6;
+constexpr int kPadHoriz = 6;
+
+}  // namespace
+
 PlayerSettingsPopup::PlayerSettingsPopup(QWidget *parent)
     : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint) {
-    setAttribute(Qt::WA_TranslucentBackground, false);
-    setAttribute(Qt::WA_StyledBackground, true);
-    setFixedWidth(205);
-    setStyleSheet("PlayerSettingsPopup {"
-                  "  background-color: #212121;"
-                  "  border: 1px solid rgba(255, 255, 255, 0.15);"
-                  "  border-radius: 8px;"
-                  "}");
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    setFixedWidth(kPopupWidth);
     setupUi();
 }
 
-QSize PlayerSettingsPopup::sizeHint() const {
-    if (m_stack && m_stack->currentWidget()) {
-        int h = m_stack->currentWidget()->sizeHint().height() + 8;
-        return QSize(205, h);
+void PlayerSettingsPopup::paintEvent(QPaintEvent *) {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    QRectF rect(0.5, 0.5, static_cast<double>(width()) - 1.0, static_cast<double>(height()) - 1.0);
+    p.setBrush(QColor(0x21, 0x21, 0x21));
+    p.setPen(QPen(QColor(255, 255, 255, 38), 1.0));
+    p.drawRoundedRect(rect, 8.0, 8.0);
+}
+
+int PlayerSettingsPopup::calculateDesiredHeight() const {
+    if (!m_stack || !m_stack->currentWidget() || m_stack->currentWidget() == m_mainPage) {
+        constexpr int kMainRows = 2;
+        return kPadTop + kPadBottom + (kMainRows * kRowHeight) + ((kMainRows - 1) * 2);
     }
-    return QSize(205, 88);
+    if (m_stack->currentWidget() == m_speedPage) {
+        constexpr int kSpeedRows = 5;
+        return kPadTop + kPadBottom + kHeaderHeight + (kSepHeight + 2 * kSepMarginV) + (kSpeedRows * kRowHeight);
+    }
+    if (m_stack->currentWidget() == m_qualityPage) {
+        int count = std::max(1, static_cast<int>(m_availableQualities.size()));
+        return kPadTop + kPadBottom + kHeaderHeight + (kSepHeight + 2 * kSepMarginV) + (count * kRowHeight);
+    }
+    return 90;
+}
+
+QSize PlayerSettingsPopup::sizeHint() const {
+    return QSize(kPopupWidth, calculateDesiredHeight());
 }
 
 QSize PlayerSettingsPopup::minimumSizeHint() const {
@@ -322,17 +333,18 @@ QSize PlayerSettingsPopup::minimumSizeHint() const {
 
 void PlayerSettingsPopup::setupUi() {
     auto *rootLayout = new QVBoxLayout(this);
-    rootLayout->setContentsMargins(0, 4, 0, 4);
+    rootLayout->setContentsMargins(kPadHoriz, kPadTop, kPadHoriz, kPadBottom);
     rootLayout->setSpacing(0);
 
-    m_stack = new DynamicStackedWidget(this);
+    m_stack = new QStackedWidget(this);
     m_stack->setStyleSheet("background: transparent;");
     rootLayout->addWidget(m_stack);
 
     buildMainMenu();
 
     // Quality Page
-    m_qualityPage = new QWidget(this);
+    m_qualityPage = new QWidget(m_stack);
+    m_qualityPage->setStyleSheet("background: transparent;");
     auto *qPageLay = new QVBoxLayout(m_qualityPage);
     qPageLay->setContentsMargins(0, 0, 0, 0);
     qPageLay->setSpacing(0);
@@ -340,15 +352,28 @@ void PlayerSettingsPopup::setupUi() {
     auto *qHeaderBtn = new QPushButton(m_qualityPage);
     qHeaderBtn->setCursor(Qt::PointingHandCursor);
     qHeaderBtn->setFocusPolicy(Qt::NoFocus);
-    qHeaderBtn->setFixedHeight(34);
+    qHeaderBtn->setFixedHeight(kHeaderHeight);
     qHeaderBtn->setStyleSheet(
-        "QPushButton { background: transparent; border: none; text-align: left; padding: 0px 8px; color: #f1f1f1; "
-        "font-size: 13px; font-weight: bold; border-radius: 4px; margin: 1px 4px; }"
+        "QPushButton { background-color: transparent; border: none; border-radius: 6px; padding: 0px; margin: 0px; min-height: 0px; min-width: 0px; }"
         "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
-        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.2); }");
-    qHeaderBtn->setIcon(lightyt::ui::icons::chevronLeft(14, QColor(0xf1, 0xf1, 0xf1)));
-    qHeaderBtn->setIconSize(QSize(14, 14));
-    qHeaderBtn->setText("  Quality");
+        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.18); }");
+    auto *qHRow = new QHBoxLayout(qHeaderBtn);
+    qHRow->setContentsMargins(6, 0, 8, 0);
+    qHRow->setSpacing(8);
+
+    auto *qBackIcon = new QLabel(qHeaderBtn);
+    qBackIcon->setFixedSize(16, 16);
+    qBackIcon->setPixmap(lightyt::ui::icons::chevronLeft(QColor(0xf1, 0xf1, 0xf1), 14).pixmap(14, 14));
+    qBackIcon->setStyleSheet("background: transparent;");
+    qBackIcon->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    qHRow->addWidget(qBackIcon);
+
+    auto *qHeaderTitle = new QLabel("Quality", qHeaderBtn);
+    qHeaderTitle->setStyleSheet("color: #f1f1f1; font-size: 13px; font-weight: 600; background: transparent;");
+    qHeaderTitle->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    qHRow->addWidget(qHeaderTitle);
+    qHRow->addStretch(1);
+
     connect(qHeaderBtn, &QPushButton::clicked, this, [this]() {
         m_stack->setCurrentWidget(m_mainPage);
         reposition();
@@ -357,21 +382,23 @@ void PlayerSettingsPopup::setupUi() {
 
     auto *qSep = new QFrame(m_qualityPage);
     qSep->setFrameShape(QFrame::HLine);
-    qSep->setFixedHeight(1);
-    qSep->setStyleSheet("background-color: rgba(255, 255, 255, 0.12); border: none; margin: 2px 4px;");
+    qSep->setFixedHeight(kSepHeight);
+    qSep->setStyleSheet(
+        QString("background-color: rgba(255, 255, 255, 0.12); border: none; margin: %1px 4px;").arg(kSepMarginV));
     qPageLay->addWidget(qSep);
 
     m_qualityListContainer = new QWidget(m_qualityPage);
+    m_qualityListContainer->setStyleSheet("background: transparent;");
     m_qualityListLayout = new QVBoxLayout(m_qualityListContainer);
     m_qualityListLayout->setContentsMargins(0, 0, 0, 0);
     m_qualityListLayout->setSpacing(0);
     qPageLay->addWidget(m_qualityListContainer);
-    qPageLay->addStretch(1);
 
     m_stack->addWidget(m_qualityPage);
 
     // Speed Page
-    m_speedPage = new QWidget(this);
+    m_speedPage = new QWidget(m_stack);
+    m_speedPage->setStyleSheet("background: transparent;");
     auto *sPageLay = new QVBoxLayout(m_speedPage);
     sPageLay->setContentsMargins(0, 0, 0, 0);
     sPageLay->setSpacing(0);
@@ -379,15 +406,28 @@ void PlayerSettingsPopup::setupUi() {
     auto *sHeaderBtn = new QPushButton(m_speedPage);
     sHeaderBtn->setCursor(Qt::PointingHandCursor);
     sHeaderBtn->setFocusPolicy(Qt::NoFocus);
-    sHeaderBtn->setFixedHeight(34);
+    sHeaderBtn->setFixedHeight(kHeaderHeight);
     sHeaderBtn->setStyleSheet(
-        "QPushButton { background: transparent; border: none; text-align: left; padding: 0px 8px; color: #f1f1f1; "
-        "font-size: 13px; font-weight: bold; border-radius: 4px; margin: 1px 4px; }"
+        "QPushButton { background-color: transparent; border: none; border-radius: 6px; padding: 0px; margin: 0px; min-height: 0px; min-width: 0px; }"
         "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
-        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.2); }");
-    sHeaderBtn->setIcon(lightyt::ui::icons::chevronLeft(14, QColor(0xf1, 0xf1, 0xf1)));
-    sHeaderBtn->setIconSize(QSize(14, 14));
-    sHeaderBtn->setText("  Playback speed");
+        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.18); }");
+    auto *sHRow = new QHBoxLayout(sHeaderBtn);
+    sHRow->setContentsMargins(6, 0, 8, 0);
+    sHRow->setSpacing(8);
+
+    auto *sBackIcon = new QLabel(sHeaderBtn);
+    sBackIcon->setFixedSize(16, 16);
+    sBackIcon->setPixmap(lightyt::ui::icons::chevronLeft(QColor(0xf1, 0xf1, 0xf1), 14).pixmap(14, 14));
+    sBackIcon->setStyleSheet("background: transparent;");
+    sBackIcon->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    sHRow->addWidget(sBackIcon);
+
+    auto *sHeaderTitle = new QLabel("Playback speed", sHeaderBtn);
+    sHeaderTitle->setStyleSheet("color: #f1f1f1; font-size: 13px; font-weight: 600; background: transparent;");
+    sHeaderTitle->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    sHRow->addWidget(sHeaderTitle);
+    sHRow->addStretch(1);
+
     connect(sHeaderBtn, &QPushButton::clicked, this, [this]() {
         m_stack->setCurrentWidget(m_mainPage);
         reposition();
@@ -396,16 +436,17 @@ void PlayerSettingsPopup::setupUi() {
 
     auto *sSep = new QFrame(m_speedPage);
     sSep->setFrameShape(QFrame::HLine);
-    sSep->setFixedHeight(1);
-    sSep->setStyleSheet("background-color: rgba(255, 255, 255, 0.12); border: none; margin: 2px 4px;");
+    sSep->setFixedHeight(kSepHeight);
+    sSep->setStyleSheet(
+        QString("background-color: rgba(255, 255, 255, 0.12); border: none; margin: %1px 4px;").arg(kSepMarginV));
     sPageLay->addWidget(sSep);
 
     m_speedListContainer = new QWidget(m_speedPage);
+    m_speedListContainer->setStyleSheet("background: transparent;");
     m_speedListLayout = new QVBoxLayout(m_speedListContainer);
     m_speedListLayout->setContentsMargins(0, 0, 0, 0);
     m_speedListLayout->setSpacing(0);
     sPageLay->addWidget(m_speedListContainer);
-    sPageLay->addStretch(1);
 
     m_stack->addWidget(m_speedPage);
 
@@ -414,36 +455,45 @@ void PlayerSettingsPopup::setupUi() {
 }
 
 void PlayerSettingsPopup::buildMainMenu() {
-    m_mainPage = new QWidget(this);
+    m_mainPage = new QWidget(m_stack);
+    m_mainPage->setStyleSheet("background: transparent;");
     auto *lay = new QVBoxLayout(m_mainPage);
-    lay->setContentsMargins(0, 2, 0, 2);
+    lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(2);
 
     // Row 1: Playback speed
     auto *speedBtn = new QPushButton(m_mainPage);
     speedBtn->setCursor(Qt::PointingHandCursor);
     speedBtn->setFocusPolicy(Qt::NoFocus);
-    speedBtn->setFixedHeight(36);
+    speedBtn->setFixedHeight(kRowHeight);
     speedBtn->setStyleSheet(
-        "QPushButton { background: transparent; border: none; padding: 0px 8px; border-radius: 4px; margin: 1px 4px; }"
+        "QPushButton { background-color: transparent; border: none; border-radius: 6px; padding: 0px; margin: 0px; min-height: 0px; min-width: 0px; }"
         "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
-        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.2); }");
+        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.18); }");
     auto *speedRow = new QHBoxLayout(speedBtn);
-    speedRow->setContentsMargins(4, 0, 4, 0);
-    speedRow->setSpacing(4);
+    speedRow->setContentsMargins(10, 0, 10, 0);
+    speedRow->setSpacing(8);
+
     auto *speedTitle = new QLabel("Playback speed", speedBtn);
     speedTitle->setStyleSheet("color: #f1f1f1; font-size: 13px; font-weight: 500; background: transparent;");
+    speedTitle->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+
     m_speedValLabel =
         new QLabel(std::abs(m_currentSpeed - 1.0) < 0.01 ? "Normal" : QString::number(m_currentSpeed) + "x", speedBtn);
-    m_speedValLabel->setStyleSheet("color: #aaaaaa; font-size: 12px; background: transparent; padding-right: 2px;");
+    m_speedValLabel->setStyleSheet("color: #aaaaaa; font-size: 12px; background: transparent;");
+    m_speedValLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+
     auto *speedChevron = new QLabel(speedBtn);
-    speedChevron->setPixmap(lightyt::ui::icons::chevronRight(14, QColor(0xaa, 0xaa, 0xaa)).pixmap(14, 14));
+    speedChevron->setFixedSize(14, 14);
+    speedChevron->setPixmap(lightyt::ui::icons::chevronRight(QColor(0xaa, 0xaa, 0xaa), 14).pixmap(14, 14));
     speedChevron->setStyleSheet("background: transparent;");
+    speedChevron->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
     speedRow->addWidget(speedTitle);
     speedRow->addStretch(1);
     speedRow->addWidget(m_speedValLabel);
     speedRow->addWidget(speedChevron);
+
     connect(speedBtn, &QPushButton::clicked, this, [this]() {
         rebuildSpeedMenu();
         m_stack->setCurrentWidget(m_speedPage);
@@ -455,54 +505,40 @@ void PlayerSettingsPopup::buildMainMenu() {
     auto *qualityBtn = new QPushButton(m_mainPage);
     qualityBtn->setCursor(Qt::PointingHandCursor);
     qualityBtn->setFocusPolicy(Qt::NoFocus);
-    qualityBtn->setFixedHeight(36);
+    qualityBtn->setFixedHeight(kRowHeight);
     qualityBtn->setStyleSheet(
-        "QPushButton { background: transparent; border: none; padding: 0px 8px; border-radius: 4px; margin: 1px 4px; }"
+        "QPushButton { background-color: transparent; border: none; border-radius: 6px; padding: 0px; margin: 0px; min-height: 0px; min-width: 0px; }"
         "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
-        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.2); }");
+        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.18); }");
     auto *qualityRow = new QHBoxLayout(qualityBtn);
-    qualityRow->setContentsMargins(4, 0, 4, 0);
-    qualityRow->setSpacing(4);
+    qualityRow->setContentsMargins(10, 0, 10, 0);
+    qualityRow->setSpacing(8);
+
     auto *qualityTitle = new QLabel("Quality", qualityBtn);
     qualityTitle->setStyleSheet("color: #f1f1f1; font-size: 13px; font-weight: 500; background: transparent;");
+    qualityTitle->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+
     m_qualityValLabel = new QLabel(m_currentQuality, qualityBtn);
-    m_qualityValLabel->setStyleSheet("color: #aaaaaa; font-size: 12px; background: transparent; padding-right: 2px;");
+    m_qualityValLabel->setStyleSheet("color: #aaaaaa; font-size: 12px; background: transparent;");
+    m_qualityValLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+
     auto *qualityChevron = new QLabel(qualityBtn);
-    qualityChevron->setPixmap(lightyt::ui::icons::chevronRight(14, QColor(0xaa, 0xaa, 0xaa)).pixmap(14, 14));
+    qualityChevron->setFixedSize(14, 14);
+    qualityChevron->setPixmap(lightyt::ui::icons::chevronRight(QColor(0xaa, 0xaa, 0xaa), 14).pixmap(14, 14));
     qualityChevron->setStyleSheet("background: transparent;");
+    qualityChevron->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
     qualityRow->addWidget(qualityTitle);
     qualityRow->addStretch(1);
     qualityRow->addWidget(m_qualityValLabel);
     qualityRow->addWidget(qualityChevron);
+
     connect(qualityBtn, &QPushButton::clicked, this, [this]() {
         rebuildQualityMenu();
         m_stack->setCurrentWidget(m_qualityPage);
         reposition();
     });
     lay->addWidget(qualityBtn);
-
-    // Row 3: Stats for nerds
-    auto *statsBtn = new QPushButton(m_mainPage);
-    statsBtn->setCursor(Qt::PointingHandCursor);
-    statsBtn->setFocusPolicy(Qt::NoFocus);
-    statsBtn->setFixedHeight(36);
-    statsBtn->setStyleSheet(
-        "QPushButton { background: transparent; border: none; padding: 0px 8px; border-radius: 4px; margin: 1px 4px; }"
-        "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
-        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.2); }");
-    auto *statsRow = new QHBoxLayout(statsBtn);
-    statsRow->setContentsMargins(4, 0, 4, 0);
-    statsRow->setSpacing(4);
-    auto *statsTitle = new QLabel("Stats for nerds", statsBtn);
-    statsTitle->setStyleSheet("color: #f1f1f1; font-size: 13px; font-weight: 500; background: transparent;");
-    statsRow->addWidget(statsTitle);
-    statsRow->addStretch(1);
-    connect(statsBtn, &QPushButton::clicked, this, [this]() {
-        emit statsForNerdsToggled();
-        close();
-    });
-    lay->addWidget(statsBtn);
 
     m_stack->addWidget(m_mainPage);
 }
@@ -521,25 +557,28 @@ void PlayerSettingsPopup::rebuildQualityMenu() {
         auto *btn = new QPushButton(m_qualityListContainer);
         btn->setCursor(Qt::PointingHandCursor);
         btn->setFocusPolicy(Qt::NoFocus);
-        btn->setFixedHeight(32);
-        btn->setStyleSheet("QPushButton { background: transparent; border: none; border-radius: 4px; margin: 1px 4px; "
-                           "padding: 0 4px; }"
-                           "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
-                           "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.2); }");
+        btn->setFixedHeight(kRowHeight);
+        btn->setStyleSheet(
+            "QPushButton { background-color: transparent; border: none; border-radius: 6px; padding: 0px; margin: 0px; min-height: 0px; min-width: 0px; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
+            "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.18); }");
         auto *row = new QHBoxLayout(btn);
-        row->setContentsMargins(4, 0, 4, 0);
+        row->setContentsMargins(8, 0, 10, 0);
+        row->setSpacing(8);
 
         auto *iconLabel = new QLabel(btn);
         iconLabel->setFixedSize(18, 18);
         iconLabel->setStyleSheet("background: transparent;");
+        iconLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
         if (q == m_currentQuality) {
-            iconLabel->setPixmap(lightyt::ui::icons::checkMark(14, QColor(0xf1, 0xf1, 0xf1)).pixmap(14, 14));
+            iconLabel->setPixmap(lightyt::ui::icons::checkMark(QColor(0xf1, 0xf1, 0xf1), 14).pixmap(14, 14));
         }
         row->addWidget(iconLabel);
 
         auto *label = new QLabel(q, btn);
         label->setStyleSheet(
-            "color: #f1f1f1; font-size: 13px; font-weight: 500; background: transparent; padding-left: 4px;");
+            "color: #f1f1f1; font-size: 13px; font-weight: 500; background: transparent;");
+        label->setAttribute(Qt::WA_TransparentForMouseEvents, true);
         row->addWidget(label);
         row->addStretch(1);
 
@@ -571,25 +610,28 @@ void PlayerSettingsPopup::rebuildSpeedMenu() {
         auto *btn = new QPushButton(m_speedListContainer);
         btn->setCursor(Qt::PointingHandCursor);
         btn->setFocusPolicy(Qt::NoFocus);
-        btn->setFixedHeight(32);
-        btn->setStyleSheet("QPushButton { background: transparent; border: none; border-radius: 4px; margin: 1px 4px; "
-                           "padding: 0 4px; }"
-                           "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
-                           "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.2); }");
+        btn->setFixedHeight(kRowHeight);
+        btn->setStyleSheet(
+            "QPushButton { background-color: transparent; border: none; border-radius: 6px; padding: 0px; margin: 0px; min-height: 0px; min-width: 0px; }"
+            "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
+            "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.18); }");
         auto *row = new QHBoxLayout(btn);
-        row->setContentsMargins(4, 0, 4, 0);
+        row->setContentsMargins(8, 0, 10, 0);
+        row->setSpacing(8);
 
         auto *iconLabel = new QLabel(btn);
         iconLabel->setFixedSize(18, 18);
         iconLabel->setStyleSheet("background: transparent;");
+        iconLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
         if (std::abs(s - m_currentSpeed) < 0.01) {
-            iconLabel->setPixmap(lightyt::ui::icons::checkMark(14, QColor(0xf1, 0xf1, 0xf1)).pixmap(14, 14));
+            iconLabel->setPixmap(lightyt::ui::icons::checkMark(QColor(0xf1, 0xf1, 0xf1), 14).pixmap(14, 14));
         }
         row->addWidget(iconLabel);
 
         auto *label = new QLabel(name, btn);
         label->setStyleSheet(
-            "color: #f1f1f1; font-size: 13px; font-weight: 500; background: transparent; padding-left: 4px;");
+            "color: #f1f1f1; font-size: 13px; font-weight: 500; background: transparent;");
+        label->setAttribute(Qt::WA_TransparentForMouseEvents, true);
         row->addWidget(label);
         row->addStretch(1);
 
@@ -637,14 +679,13 @@ void PlayerSettingsPopup::showAbove(QWidget *target) {
 void PlayerSettingsPopup::reposition() {
     if (!m_targetBtn)
         return;
-    if (m_stack) {
-        m_stack->adjustSize();
-    }
-    adjustSize();
+
+    const int targetH = calculateDesiredHeight();
+    setFixedHeight(targetH);
 
     QPoint globalPos = m_targetBtn->mapToGlobal(QPoint(0, 0));
     int x = globalPos.x() + m_targetBtn->width() - width();
-    int y = globalPos.y() - height() - 8;
+    int y = globalPos.y() - targetH - 8;
 
     QScreen *scr = m_targetBtn->screen();
     if (scr) {
@@ -857,8 +898,6 @@ void PlayerControlsOverlay::setupUi() {
         m_playbackSpeed = s;
         emit playbackSpeedChanged(s);
     });
-    connect(m_settingsPopup, &PlayerSettingsPopup::statsForNerdsToggled, this,
-            &PlayerControlsOverlay::statsForNerdsToggled);
     connect(m_settingsPopup, &PlayerSettingsPopup::popupHidden, this, [this]() {
         m_isMenuOpen = false;
         if (m_isPlaying) {

@@ -478,6 +478,7 @@ void IpcMpvBackend::observeProperties() {
     sendJsonCommand("{\"command\": [\"observe_property\", 15, \"primaries\"]}\n");
     sendJsonCommand("{\"command\": [\"observe_property\", 16, \"video-bitrate\"]}\n");
     sendJsonCommand("{\"command\": [\"observe_property\", 17, \"audio-bitrate\"]}\n");
+    sendJsonCommand("{\"command\": [\"observe_property\", 18, \"cache-speed\"]}\n");
 }
 
 void IpcMpvBackend::sendJsonCommand(std::string_view cmd) {

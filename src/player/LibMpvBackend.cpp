@@ -102,6 +102,7 @@ bool LibMpvBackend::start(int64_t windowId) {
         api.observe_property(m_mpv, 4, "paused-for-cache", MPV_FORMAT_FLAG);
         api.observe_property(m_mpv, 5, "demuxer-cache-duration", MPV_FORMAT_DOUBLE);
         api.observe_property(m_mpv, 6, "eof-reached", MPV_FORMAT_FLAG);
+        api.observe_property(m_mpv, 7, "cache-speed", MPV_FORMAT_INT64);
     }
 
     m_running = true;

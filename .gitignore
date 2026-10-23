@@ -20,6 +20,11 @@ CPackSourceConfig.cmake
 compile_commands.json
 .cache/
 
+# Runtime binaries and portable dependencies
+lib/*
+!lib/.gitkeep
+
+
 
 
 

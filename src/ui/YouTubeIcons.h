@@ -37,7 +37,8 @@ enum class IconId : uint16_t {
     CheckMark,
     Gear,
     ChevronRight,
-    ChevronLeft
+    ChevronLeft,
+    Close
 };
 
 struct IconKey {
@@ -512,6 +513,22 @@ template<typename DrawFn>
 }
 [[nodiscard]] inline QIcon chevronLeft(int size, const QColor &color) {
     return chevronLeft(color, size);
+}
+
+// Close / Cross icon (dialog / stats dismiss)
+[[nodiscard]] inline QIcon close(const QColor &color = QColor(0xf1, 0xf1, 0xf1), int size = 18) {
+    return detail::makeCachedIcon(detail::IconId::Close, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      QPen pen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      const double pad = size * 0.28;
+                                      const double extent = size - pad;
+                                      p.drawLine(QPointF(pad, pad), QPointF(extent, extent));
+                                      p.drawLine(QPointF(extent, pad), QPointF(pad, extent));
+                                  });
+}
+[[nodiscard]] inline QIcon close(int size, const QColor &color) {
+    return close(color, size);
 }
 
 }  // namespace lightyt::ui::icons

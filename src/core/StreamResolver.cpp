@@ -228,18 +228,18 @@ std::string StreamResolver::qualityToFormatString(std::string_view quality, bool
     return "bestvideo" + vcodecFilter + "+bestaudio/best";
 }
 
-std::string StreamResolver::qualityToFormatSort(std::string_view quality) {
+std::string StreamResolver::qualityToFormatSort(std::string_view quality, bool allowAv1) {
     if (quality == "1080p") {
-        return "res:1080";
+        return allowAv1 ? "res:1080,vcodec:av01,vp09,avc1" : "res:1080";
     }
     if (quality == "720p") {
-        return "res:720";
+        return allowAv1 ? "res:720,vcodec:av01,vp09,avc1" : "res:720";
     }
     if (quality == "480p") {
-        return "res:480";
+        return allowAv1 ? "res:480,vcodec:av01,vp09,avc1" : "res:480";
     }
     if (quality == "360p") {
-        return "res:360";
+        return allowAv1 ? "res:360,vcodec:av01,vp09,avc1" : "res:360";
     }
     return "";
 }
@@ -542,6 +542,21 @@ std::vector<std::string> findAllJsRuntimes() {
         if (!s_initialized) {
             if (!foundList.empty()) {
                 LOG_INFO("[StreamResolver] Using JS runtime: {}", foundList.front());
+                auto colonPos = foundList.front().find(':');
+                if (colonPos != std::string::npos) {
+                    std::string binPath = foundList.front().substr(colonPos + 1);
+                    std::error_code ec;
+                    std::filesystem::path binDir = std::filesystem::path(binPath).parent_path();
+                    if (!binDir.empty() && std::filesystem::is_directory(binDir, ec)) {
+                        const char *currPath = std::getenv("PATH");
+                        std::string newPath = binDir.string() + (currPath ? (":" + std::string(currPath)) : "");
+#ifdef _WIN32
+                        _putenv_s("PATH", newPath.c_str());
+#else
+                        setenv("PATH", newPath.c_str(), 1);
+#endif
+                    }
+                }
             }
             s_cachedRuntimes = foundList;
             s_initialized = true;
@@ -597,6 +612,81 @@ std::string StreamResolver::findJsRuntime() {
     return runtimes.empty() ? std::string{} : runtimes.front();
 }
 
+bool StreamResolver::hasJsRuntime() noexcept {
+    return !findAllJsRuntimes().empty();
+}
+
+std::string StreamResolver::findPotProvider() {
+    static std::string s_cachedPot;
+    static std::mutex s_mutex;
+    {
+        std::lock_guard lock(s_mutex);
+        if (!s_cachedPot.empty()) {
+            return s_cachedPot;
+        }
+    }
+
+    std::string found;
+#ifdef _WIN32
+    for (const char *name : {"bgutil-pot.exe", "bgutil-pot"}) {
+#else
+    for (const char *name : {"bgutil-pot", "bgutil-pot.exe"}) {
+#endif
+        for (const auto &cand : lightyt::paths::getLocalCandidatePaths(name)) {
+            if (fileExists(cand)) {
+#ifndef _WIN32
+                if (access(cand.c_str(), X_OK) == 0)
+#endif
+                {
+                    found = cand.string();
+                    break;
+                }
+            }
+        }
+        if (!found.empty()) {
+            break;
+        }
+    }
+
+    if (found.empty()) {
+        const char *pathEnv = std::getenv("PATH");
+        if (pathEnv != nullptr) {
+            std::stringstream ss(pathEnv);
+            std::string dir;
+#ifdef _WIN32
+            constexpr char sep = ';';
+#else
+            constexpr char sep = ':';
+#endif
+            while (std::getline(ss, dir, sep)) {
+                if (!dir.empty()) {
+                    std::filesystem::path cand = std::filesystem::path(dir) / "bgutil-pot";
+#ifndef _WIN32
+                    if (access(cand.c_str(), X_OK) == 0)
+#else
+                    if (fileExists(cand))
+#endif
+                    {
+                        found = cand.string();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!found.empty()) {
+        std::lock_guard lock(s_mutex);
+        s_cachedPot = found;
+        LOG_INFO("[StreamResolver] Found POT provider: {}", found);
+    }
+    return found;
+}
+
+bool StreamResolver::hasPotProvider() noexcept {
+    return !findPotProvider().empty();
+}
+
 bool StreamResolver::isAuthRequiredError(std::string_view err) noexcept {
     return err.find("Sign in to confirm your age") != std::string_view::npos ||
            err.find("Private video") != std::string_view::npos ||
@@ -621,16 +711,9 @@ std::vector<std::string> StreamResolver::buildYtDlpArgs(const std::string &ytdlp
     }
 
     auto jsRuntimes = findAllJsRuntimes();
-    if (!jsRuntimes.empty()) {
-        for (const auto &rt : jsRuntimes) {
-            args.emplace_back("--js-runtimes");
-            args.emplace_back(rt);
-        }
-    } else {
-        for (const char *rt : {"deno", "node", "bun", "quickjs"}) {
-            args.emplace_back("--js-runtimes");
-            args.emplace_back(rt);
-        }
+    for (const auto &rt : jsRuntimes) {
+        args.emplace_back("--js-runtimes");
+        args.emplace_back(rt);
     }
 
     if (!extractorArgs.empty()) {
@@ -798,7 +881,7 @@ bool StreamResolver::resolve(std::string_view videoIdOrUrl, std::string_view qua
     }
 
     std::string format = qualityToFormatString(quality, allowAv1);
-    std::string formatSort = qualityToFormatSort(quality);
+    std::string formatSort = qualityToFormatSort(quality, allowAv1);
 
     // Isolate cookies into a temporary file so yt-dlp's cookie jar dumper never mutates the master file
     std::filesystem::path tempCookiePath;
@@ -875,8 +958,8 @@ bool StreamResolver::resolve(std::string_view videoIdOrUrl, std::string_view qua
 
     const bool hasCookies = !effectiveCookiePath.empty();
 
-    constexpr std::string_view FAST_DEFAULT_ARGS = "youtube:player_skip=configs;player_client=default,-visionos";
-    constexpr std::string_view ANON_HD_ARGS = "youtube:player_client=web_embedded,tv_downgraded,default";
+    constexpr std::string_view FAST_DEFAULT_ARGS = "youtube:player_skip=configs;player_client=default";
+    constexpr std::string_view ANON_HD_ARGS = "youtube:player_client=tv_downgraded,web_embedded,default";
     constexpr std::string_view AUTH_HD_ARGS = "youtube:player_client=web_embedded,tv_downgraded,web_safari,web";
 
     // 1. Primary fast un-throttled extraction (anonymous VisionOS + Web default clients)

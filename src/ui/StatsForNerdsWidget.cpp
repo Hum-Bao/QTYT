@@ -1,4 +1,5 @@
 #include "StatsForNerdsWidget.h"
+#include "YouTubeIcons.h"
 #include "../player/PlayerController.h"
 
 #include <QApplication>
@@ -64,21 +65,23 @@ void StatsForNerdsWidget::setupUi() {
     headerLayout->addWidget(titleLabel);
     headerLayout->addStretch(1);
 
-    auto *closeBtn = new QPushButton("✕", this);
-    closeBtn->setFixedSize(20, 20);
+    auto *closeBtn = new QPushButton(this);
+    closeBtn->setFixedSize(24, 24);
     closeBtn->setCursor(Qt::PointingHandCursor);
     closeBtn->setFocusPolicy(Qt::NoFocus);
+    closeBtn->setIcon(lightyt::ui::icons::close(QColor(0xaa, 0xaa, 0xaa), 14));
+    closeBtn->setIconSize(QSize(14, 14));
     closeBtn->setStyleSheet("QPushButton {"
-                            "  background: transparent;"
+                            "  background-color: transparent;"
                             "  border: none;"
-                            "  color: #aaaaaa;"
-                            "  font-size: 13px;"
-                            "  font-weight: bold;"
-                            "  border-radius: 10px;"
+                            "  padding: 0px;"
+                            "  margin: 0px;"
+                            "  min-width: 0px;"
+                            "  min-height: 0px;"
+                            "  border-radius: 12px;"
                             "}"
                             "QPushButton:hover {"
                             "  background-color: rgba(255, 255, 255, 0.15);"
-                            "  color: #ffffff;"
                             "}"
                             "QPushButton:pressed {"
                             "  background-color: rgba(255, 255, 255, 0.25);"
@@ -139,6 +142,7 @@ void StatsForNerdsWidget::setVideoContext(const std::string &videoId, const std:
     m_videoId = videoId;
     m_videoItag = videoItag;
     m_audioItag = audioItag;
+    m_lastConnectionSpeedKbps = 0;
     if (!optimalRes.isEmpty()) {
         m_optimalRes = optimalRes;
     }
@@ -226,7 +230,13 @@ void StatsForNerdsWidget::refreshStats() {
     if (!m_audioItag.empty()) {
         aCodec += " (" + m_audioItag + ")";
     }
-    m_valCodecs->setText(QString::fromStdString(vCodec + " / " + aCodec));
+    int64_t totalBitrateKbps = (stats.videoBitrate + stats.audioBitrate) / 1000;
+    if (totalBitrateKbps > 0) {
+        m_valCodecs->setText(QString::fromStdString(vCodec + " / " + aCodec) +
+                             QString(" [%1 kbps]").arg(totalBitrateKbps));
+    } else {
+        m_valCodecs->setText(QString::fromStdString(vCodec + " / " + aCodec));
+    }
 
     // 6. Color
     std::string colorM = stats.colorMatrix.empty() ? "bt709" : stats.colorMatrix;
@@ -234,11 +244,26 @@ void StatsForNerdsWidget::refreshStats() {
     m_valColor->setText(QString::fromStdString(colorM + " / " + colorP));
 
     // 7. Connection Speed
-    int64_t totalBitrateKbps = (stats.videoBitrate + stats.audioBitrate) / 1000;
-    m_valConnectionSpeed->setText(QString::number(std::max<int64_t>(0, totalBitrateKbps)) + " Kbps");
+    if (stats.cacheSpeedBytes > 0) {
+        int64_t curSpeedKbps = (stats.cacheSpeedBytes * 8) / 1000;
+        if (m_lastConnectionSpeedKbps > 0) {
+            m_lastConnectionSpeedKbps = (m_lastConnectionSpeedKbps * 3 + curSpeedKbps) / 4;
+        } else {
+            m_lastConnectionSpeedKbps = curSpeedKbps;
+        }
+    }
+    if (m_lastConnectionSpeedKbps > 0) {
+        m_valConnectionSpeed->setText(QString::number(m_lastConnectionSpeedKbps) + " Kbps");
+    } else {
+        m_valConnectionSpeed->setText("—");
+    }
 
     // 8. Network Activity
-    m_valNetworkActivity->setText("0 KB");
+    if (stats.cacheSpeedBytes > 0) {
+        m_valNetworkActivity->setText(QString::number(stats.cacheSpeedBytes / 1024) + " KB");
+    } else {
+        m_valNetworkActivity->setText("0 KB");
+    }
 
     // 9. Buffer Health
     m_valBufferHealth->setText(QString::number(std::max(0.0, stats.bufferSeconds), 'f', 2) + " s");

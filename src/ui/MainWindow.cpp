@@ -76,6 +76,14 @@ MainWindow::MainWindow(QWidget *parent)
     setupUi();
 
     // Restore window geometry, state, and player preferences from AppSettings
+    auto settingsPath = lightyt::paths::getSettingsFilePath();
+    QString settingsPathQ = QString::fromUtf8(settingsPath.string().c_str());
+    QSettings iniFile(settingsPathQ, QSettings::IniFormat);
+    if (!iniFile.contains("allowAv1") && StreamResolver::hasJsRuntime()) {
+        AppSettings::instance().setAllowAv1(true);
+        LOG_INFO("[MainWindow] JavaScript runtime detected: enabling AV1/VP9 codecs by default");
+    }
+
     auto geom = AppSettings::instance().getGeometry();
     if (!geom.isEmpty()) {
         restoreGeometry(geom);

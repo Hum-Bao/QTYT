@@ -38,11 +38,20 @@ public:
     // Locate JavaScript runtime on the system (Deno, Node.js, Bun) for yt-dlp cipher/n-sig solving
     [[nodiscard]] static std::string findJsRuntime();
 
+    // Check if a supported JavaScript runtime (Node.js, Bun, Deno) is detected
+    [[nodiscard]] static bool hasJsRuntime() noexcept;
+
+    // Check if a Proof of Origin Token (POT) provider is installed/available
+    [[nodiscard]] static bool hasPotProvider() noexcept;
+
+    // Locate bgutil-pot or POT provider executable if available
+    [[nodiscard]] static std::string findPotProvider();
+
     // Map UI quality label ("1080p", "720p", "480p", "360p", "Auto", "Audio Only") to yt-dlp format selector
     [[nodiscard]] static std::string qualityToFormatString(std::string_view quality, bool allowAv1 = false);
 
     // Map UI quality label to yt-dlp format sort parameter (-S)
-    [[nodiscard]] static std::string qualityToFormatSort(std::string_view quality);
+    [[nodiscard]] static std::string qualityToFormatSort(std::string_view quality, bool allowAv1 = false);
 
     // Extract video ID from videoIdOrUrl (strips shorts prefixes, extracts from youtube.com, youtu.be, etc.)
     [[nodiscard]] static std::string extractVideoId(std::string_view videoIdOrUrl);

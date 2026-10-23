@@ -26,6 +26,7 @@ struct PlayerPlaybackStats {
     int64_t videoBitrate = 0;
     int64_t audioBitrate = 0;
     double bufferSeconds = 0.0;
+    int64_t cacheSpeedBytes = 0;
 };
 
 struct PlayerEvents {
