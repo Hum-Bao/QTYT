@@ -1,6 +1,11 @@
 #include "PlayerControlsOverlay.h"
 
+#include "../utils/AppSettings.h"
 #include "YouTubeIcons.h"
+
+namespace lightyt {
+using ::AppSettings;
+}
 
 #include <QEnterEvent>
 #include <QFontMetrics>
@@ -725,6 +730,8 @@ void PlayerSettingsPopup::keyPressEvent(QKeyEvent *event) {
 PlayerControlsOverlay::PlayerControlsOverlay(QWidget *parent) : QWidget(parent) {
     setObjectName("playerControlsOverlay");
     setMouseTracking(true);
+    m_isAutoplay = lightyt::AppSettings::instance().getAutoplay();
+    m_isTheaterMode = lightyt::AppSettings::instance().getTheaterMode();
     setupUi();
 }
 
@@ -863,7 +870,22 @@ void PlayerControlsOverlay::setupUi() {
 
     controlsRow->addStretch(1);
 
-    // 2d. Settings / Gear Button (36x36)
+    // 2d. Autoplay Toggle Button (36x36)
+    m_autoplayBtn = new QPushButton(controlsContainer);
+    m_autoplayBtn->setFocusPolicy(Qt::NoFocus);
+    m_autoplayBtn->setCursor(Qt::PointingHandCursor);
+    m_autoplayBtn->setFixedSize(36, 36);
+    m_autoplayBtn->setIcon(lightyt::ui::icons::autoplay(m_isAutoplay, QColor(0xf1, 0xf1, 0xf1), 20));
+    m_autoplayBtn->setIconSize(QSize(20, 20));
+    m_autoplayBtn->setStyleSheet(kIconBtnQss);
+    m_autoplayBtn->setToolTip(m_isAutoplay ? "Autoplay is on" : "Autoplay is off");
+    connect(m_autoplayBtn, &QPushButton::clicked, this, [this]() {
+        setAutoplay(!m_isAutoplay);
+        emit autoplayToggled(m_isAutoplay);
+    });
+    controlsRow->addWidget(m_autoplayBtn, 0, Qt::AlignVCenter);
+
+    // 2e. Settings / Gear Button (36x36)
     m_settingsBtn = new QPushButton(controlsContainer);
     m_settingsBtn->setFocusPolicy(Qt::NoFocus);
     m_settingsBtn->setCursor(Qt::PointingHandCursor);
@@ -875,7 +897,19 @@ void PlayerControlsOverlay::setupUi() {
     connect(m_settingsBtn, &QPushButton::clicked, this, &PlayerControlsOverlay::onSettingsClicked);
     controlsRow->addWidget(m_settingsBtn, 0, Qt::AlignVCenter);
 
-    // 2e. Fullscreen Button (36x36)
+    // 2f. Theater Mode Button (36x36)
+    m_theaterBtn = new QPushButton(controlsContainer);
+    m_theaterBtn->setFocusPolicy(Qt::NoFocus);
+    m_theaterBtn->setCursor(Qt::PointingHandCursor);
+    m_theaterBtn->setFixedSize(36, 36);
+    m_theaterBtn->setIcon(lightyt::ui::icons::theaterMode(m_isTheaterMode, QColor(0xf1, 0xf1, 0xf1), 20));
+    m_theaterBtn->setIconSize(QSize(20, 20));
+    m_theaterBtn->setStyleSheet(kIconBtnQss);
+    m_theaterBtn->setToolTip(m_isTheaterMode ? "Default view (t)" : "Theater mode (t)");
+    connect(m_theaterBtn, &QPushButton::clicked, this, &PlayerControlsOverlay::theaterModeToggleRequested);
+    controlsRow->addWidget(m_theaterBtn, 0, Qt::AlignVCenter);
+
+    // 2g. Fullscreen Button (36x36)
     m_fullscreenBtn = new QPushButton(controlsContainer);
     m_fullscreenBtn->setFocusPolicy(Qt::NoFocus);
     m_fullscreenBtn->setCursor(Qt::PointingHandCursor);
@@ -1028,6 +1062,22 @@ void PlayerControlsOverlay::setFullscreen(bool isFullscreen) {
     m_isFullscreen = isFullscreen;
     m_fullscreenBtn->setIcon(lightyt::ui::icons::fullscreen(20, QColor(0xf1, 0xf1, 0xf1), isFullscreen));
     m_fullscreenBtn->setToolTip(isFullscreen ? "Exit full screen (f)" : "Full screen (f)");
+}
+
+void PlayerControlsOverlay::setAutoplay(bool enabled) {
+    m_isAutoplay = enabled;
+    if (m_autoplayBtn) {
+        m_autoplayBtn->setIcon(lightyt::ui::icons::autoplay(enabled, QColor(0xf1, 0xf1, 0xf1), 20));
+        m_autoplayBtn->setToolTip(enabled ? "Autoplay is on" : "Autoplay is off");
+    }
+}
+
+void PlayerControlsOverlay::setTheaterMode(bool isTheater) {
+    m_isTheaterMode = isTheater;
+    if (m_theaterBtn) {
+        m_theaterBtn->setIcon(lightyt::ui::icons::theaterMode(isTheater, QColor(0xf1, 0xf1, 0xf1), 20));
+        m_theaterBtn->setToolTip(isTheater ? "Default view (t)" : "Theater mode (t)");
+    }
 }
 
 void PlayerControlsOverlay::onMuteClicked() {

@@ -53,6 +53,8 @@ void AppSettings::loadFromDisk() {
     m_quality = readValue("quality", "1080p").toString();
     m_hideShorts = readValue("hideShorts", false).toBool();
     m_allowAv1 = readValue("allowAv1", false).toBool();
+    m_autoplay = readValue("autoplay", true).toBool();
+    m_theaterMode = readValue("theaterMode", false).toBool();
 
     m_selectedChannelPageId = readValue("selectedChannelPageId", QString()).toString();
     m_selectedAuthUserIndex = readValue("selectedAuthUserIndex", -1).toInt();
@@ -81,6 +83,8 @@ void AppSettings::saveToDiskLocked() {
     settings.setValue("quality", m_quality);
     settings.setValue("hideShorts", m_hideShorts);
     settings.setValue("allowAv1", m_allowAv1);
+    settings.setValue("autoplay", m_autoplay);
+    settings.setValue("theaterMode", m_theaterMode);
     settings.setValue("selectedChannelPageId", m_selectedChannelPageId);
     settings.setValue("selectedAuthUserIndex", m_selectedAuthUserIndex);
     settings.setValue("selectedChannelName", m_selectedChannelName);
@@ -171,6 +175,34 @@ void AppSettings::setAllowAv1(bool allow) {
     std::lock_guard lock(m_mutex);
     if (m_allowAv1 != allow) {
         m_allowAv1 = allow;
+        m_dirty = true;
+        saveToDiskLocked();
+    }
+}
+
+bool AppSettings::getAutoplay() const {
+    std::lock_guard lock(m_mutex);
+    return m_autoplay;
+}
+
+void AppSettings::setAutoplay(bool autoplay) {
+    std::lock_guard lock(m_mutex);
+    if (m_autoplay != autoplay) {
+        m_autoplay = autoplay;
+        m_dirty = true;
+        saveToDiskLocked();
+    }
+}
+
+bool AppSettings::getTheaterMode() const {
+    std::lock_guard lock(m_mutex);
+    return m_theaterMode;
+}
+
+void AppSettings::setTheaterMode(bool theater) {
+    std::lock_guard lock(m_mutex);
+    if (m_theaterMode != theater) {
+        m_theaterMode = theater;
         m_dirty = true;
         saveToDiskLocked();
     }

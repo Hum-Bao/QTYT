@@ -38,7 +38,9 @@ enum class IconId : uint16_t {
     Gear,
     ChevronRight,
     ChevronLeft,
-    Close
+    Close,
+    TheaterMode,
+    Autoplay
 };
 
 struct IconKey {
@@ -529,6 +531,81 @@ template<typename DrawFn>
 }
 [[nodiscard]] inline QIcon close(int size, const QColor &color) {
     return close(color, size);
+}
+
+// Theater Mode cinema frame icon (toggleable cinema vs standard frame)
+[[nodiscard]] inline QIcon theaterMode(bool isTheater = false, const QColor &color = QColor(0xf1, 0xf1, 0xf1),
+                                       int size = 20) {
+    return detail::makeCachedIcon(detail::IconId::TheaterMode, size, size, color.rgba(), isTheater ? 1 : 0,
+                                  [isTheater, color, size](QPainter &p, const QRectF &) {
+                                      const double ox = (size - 20.0) / 2.0;
+                                      const double oy = (size - 20.0) / 2.0;
+                                      QPen pen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      p.setBrush(Qt::NoBrush);
+
+                                      if (!isTheater) {
+                                          // Wide cinema frame outline
+                                          p.drawRoundedRect(QRectF(ox + 2.0, oy + 4.5, 16.0, 11.0), 1.2, 1.2);
+                                      } else {
+                                          // Standard / Default view frame
+                                          p.drawRoundedRect(QRectF(ox + 4.5, oy + 5.5, 11.0, 9.0), 1.2, 1.2);
+                                      }
+                                  });
+}
+[[nodiscard]] inline QIcon theaterMode(int size, const QColor &color, bool isTheater = false) {
+    return theaterMode(isTheater, color, size);
+}
+
+// Autoplay toggle pill switch with play triangle / circular knob (on vs off state)
+[[nodiscard]] inline QIcon autoplay(bool on = true, const QColor &color = QColor(0xf1, 0xf1, 0xf1),
+                                    int size = 20) {
+    return detail::makeCachedIcon(detail::IconId::Autoplay, size, size, color.rgba(), on ? 1 : 0,
+                                  [on, color, size](QPainter &p, const QRectF &) {
+                                      const double ox = (size - 20.0) / 2.0;
+                                      const double oy = (size - 20.0) / 2.0;
+
+                                      // Capsule Track
+                                      QRectF trackRect(ox + 1.5, oy + 4.5, 17.0, 11.0);
+                                      QPainterPath track;
+                                      track.addRoundedRect(trackRect, 5.5, 5.5);
+
+                                      if (on) {
+                                          p.setPen(Qt::NoPen);
+                                          p.fillPath(track, QColor(color.red(), color.green(), color.blue(), 75));
+
+                                          // Knob on right
+                                          QPointF knobCenter(ox + 13.0, oy + 10.0);
+                                          p.setBrush(color);
+                                          p.drawEllipse(knobCenter, 4.2, 4.2);
+
+                                          // Play triangle inside knob
+                                          QPainterPath tri;
+                                          tri.moveTo(ox + 12.0, oy + 8.2);
+                                          tri.lineTo(ox + 15.0, oy + 10.0);
+                                          tri.lineTo(ox + 12.0, oy + 11.8);
+                                          tri.closeSubpath();
+                                          p.fillPath(tri, QColor(0x0f, 0x0f, 0x0f));
+                                      } else {
+                                          QPen pen(QColor(color.red(), color.green(), color.blue(), 100), 1.2);
+                                          p.setPen(pen);
+                                          p.setBrush(QColor(0, 0, 0, 40));
+                                          p.drawPath(track);
+
+                                          // Knob on left
+                                          p.setPen(Qt::NoPen);
+                                          p.setBrush(QColor(0x90, 0x90, 0x90));
+                                          QPointF knobCenter(ox + 7.0, oy + 10.0);
+                                          p.drawEllipse(knobCenter, 4.2, 4.2);
+
+                                          // Pause double bar inside knob
+                                          p.fillRect(QRectF(ox + 5.7, oy + 8.2, 1.0, 3.6), QColor(0x0f, 0x0f, 0x0f));
+                                          p.fillRect(QRectF(ox + 7.3, oy + 8.2, 1.0, 3.6), QColor(0x0f, 0x0f, 0x0f));
+                                      }
+                                  });
+}
+[[nodiscard]] inline QIcon autoplay(int size, const QColor &color, bool on = true) {
+    return autoplay(on, color, size);
 }
 
 }  // namespace lightyt::ui::icons

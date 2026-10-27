@@ -16,7 +16,7 @@ namespace lightyt {
 class WatchHistoryTracker;
 }
 
-enum class ContinuationKind : uint8_t { Browse, Search };
+enum class ContinuationKind : uint8_t { Browse, Search, WatchNext };
 
 struct FeedResult {
     std::vector<VideoItem> videos;

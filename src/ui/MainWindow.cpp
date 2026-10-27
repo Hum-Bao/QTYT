@@ -11,10 +11,13 @@
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QPointer>
 #include <QScreen>
+#include <QShortcut>
 #include <QStatusBar>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -265,6 +268,27 @@ void MainWindow::setupUi() {
     m_stackedWidget->addWidget(m_playerWidget);
 
     mainLayout->addWidget(m_stackedWidget, 1);
+
+    // Feature 21: Global keyboard shortcuts 'T' (Theater Mode) and 'Shift+N' (Next Video) with search input focus guards
+    auto *theaterShortcut = new QShortcut(QKeySequence(Qt::Key_T), this);
+    connect(theaterShortcut, &QShortcut::activated, this, [this]() {
+        if (m_searchInput && m_searchInput->hasFocus()) {
+            return;
+        }
+        if (m_playerWidget) {
+            m_playerWidget->toggleTheaterMode();
+        }
+    });
+
+    auto *nextShortcut = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_N), this);
+    connect(nextShortcut, &QShortcut::activated, this, [this]() {
+        if (m_searchInput && m_searchInput->hasFocus()) {
+            return;
+        }
+        if (m_playerWidget) {
+            m_playerWidget->playNextVideo();
+        }
+    });
 
     statusBar()->setStyleSheet(
         "QStatusBar { background-color: #0f0f0f; color: #717171; border-top: 1px solid #1f1f1f; font-size: 11px; }");
@@ -660,4 +684,27 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     }
     AppSettings::instance().sync();
     QMainWindow::closeEvent(event);
+}
+
+void MainWindow::keyPressEvent(QKeyEvent *event) {
+    if (m_searchInput && m_searchInput->hasFocus()) {
+        QMainWindow::keyPressEvent(event);
+        return;
+    }
+
+    if (event->key() == Qt::Key_T && event->modifiers() == Qt::NoModifier) {
+        if (m_playerWidget) {
+            m_playerWidget->toggleTheaterMode();
+            event->accept();
+            return;
+        }
+    } else if (event->key() == Qt::Key_N && (event->modifiers() & Qt::ShiftModifier)) {
+        if (m_playerWidget) {
+            m_playerWidget->playNextVideo();
+            event->accept();
+            return;
+        }
+    }
+
+    QMainWindow::keyPressEvent(event);
 }

@@ -412,11 +412,20 @@ FeedResult YouTubeClient::fetchContinuation(std::string_view continuationToken, 
     req["context"] = buildBaseContext();
     req["continuation"] = std::string(continuationToken);
 
-    LOG_DEBUG("[YouTubeClient] Fetching next batch with continuation token (kind: {})...",
-              (kind == ContinuationKind::Search ? "Search" : "Browse"));
+    std::string_view kindStr = "Browse";
+    std::string endpointName = "browse";
+    if (kind == ContinuationKind::Search) {
+        kindStr = "Search";
+        endpointName = "search";
+    } else if (kind == ContinuationKind::WatchNext) {
+        kindStr = "WatchNext";
+        endpointName = "next";
+    }
+
+    LOG_DEBUG("[YouTubeClient] Fetching next batch with continuation token (kind: {})...", kindStr);
 
     std::vector<std::string> headers = buildHeaders(useAuth);
-    std::string endpointUrl = lightyt::innertube::makeApiUrl(kind == ContinuationKind::Search ? "search" : "browse");
+    std::string endpointUrl = lightyt::innertube::makeApiUrl(endpointName);
     HttpResponse res = postInnerTube(endpointUrl, req.dump(), headers);
 
     if (!res.isOk() && useAuth) {
@@ -534,8 +543,8 @@ WatchMetadata YouTubeClient::fetchWatchMetadata(std::string_view videoId, const 
     if (res.isOk() && !res.body.empty()) {
         try {
             auto json = nlohmann::json::parse(res.body);
-            (void)lightyt::InnerTubeParser::parseWatchNextMetadata(json, meta);
             meta.videoId = std::string(videoId);
+            (void)lightyt::InnerTubeParser::parseWatchNextMetadata(json, meta);
         } catch (const std::exception &ex) {
             LOG_DEBUG("[YouTubeClient] Failed to parse /next JSON: {}", ex.what());
         }

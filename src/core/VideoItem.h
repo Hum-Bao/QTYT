@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct VideoItem {
     std::string id;
@@ -44,4 +45,9 @@ struct WatchMetadata {
     bool isLiked = false;
     bool isDisliked = false;
     bool isSubscribed = false;
+
+    // R1 Extensions
+    std::string autoplayVideoId;
+    std::vector<VideoItem> relatedVideos;
+    std::string continuationToken;
 };

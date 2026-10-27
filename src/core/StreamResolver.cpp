@@ -655,12 +655,16 @@ std::string StreamResolver::findPotProvider() {
             std::string dir;
 #ifdef _WIN32
             constexpr char sep = ';';
+            const std::array<const char *, 2> names = {"bgutil-pot.exe", "bgutil-pot"};
 #else
             constexpr char sep = ':';
+            const std::array<const char *, 2> names = {"bgutil-pot", "bgutil-pot.exe"};
 #endif
             while (std::getline(ss, dir, sep)) {
-                if (!dir.empty()) {
-                    std::filesystem::path cand = std::filesystem::path(dir) / "bgutil-pot";
+                if (dir.empty())
+                    continue;
+                for (const char *binName : names) {
+                    std::filesystem::path cand = std::filesystem::path(dir) / binName;
 #ifndef _WIN32
                     if (access(cand.c_str(), X_OK) == 0)
 #else
@@ -670,6 +674,9 @@ std::string StreamResolver::findPotProvider() {
                         found = cand.string();
                         break;
                     }
+                }
+                if (!found.empty()) {
+                    break;
                 }
             }
         }

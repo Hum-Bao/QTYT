@@ -150,6 +150,111 @@ void recursivelyFindContinuationToken(const nlohmann::json &node, std::string &o
     }
 }
 
+const nlohmann::json *findTwoColumnWatchNext(const nlohmann::json &root) {
+    if (!root.is_object()) {
+        return nullptr;
+    }
+    if (const auto *tc = findObject(root, "twoColumnWatchNextResults")) {
+        return tc;
+    }
+    if (const auto *cnt = findObject(root, "contents")) {
+        if (const auto *tc = findObject(*cnt, "twoColumnWatchNextResults")) {
+            return tc;
+        }
+    }
+    if (const auto *resp = findObject(root, "response")) {
+        if (const auto *cnt = findObject(*resp, "contents")) {
+            if (const auto *tc = findObject(*cnt, "twoColumnWatchNextResults")) {
+                return tc;
+            }
+        }
+        if (const auto *tc = findObject(*resp, "twoColumnWatchNextResults")) {
+            return tc;
+        }
+    }
+    return nullptr;
+}
+
+std::string extractAutoplayVideoId(const nlohmann::json &apNode, bool allowDirectCompact = false) {
+    std::function<std::string(const nlohmann::json &, int, bool)> searchAutoplay =
+        [&](const nlohmann::json &node, int depth, bool insideAutoplayContext) -> std::string {
+        if (depth > 24 || (!node.is_object() && !node.is_array())) {
+            return {};
+        }
+        if (node.is_object()) {
+            if (const auto *avr = findObject(node, "autoplayVideoRenderer")) {
+                if (const auto *ne = findObject(*avr, "navigationEndpoint")) {
+                    if (const auto *we = findObject(*ne, "watchEndpoint")) {
+                        if (auto vid = findString(*we, "videoId"); !vid.empty()) {
+                            return std::string(vid);
+                        }
+                    }
+                }
+                if (const auto *we = findObject(*avr, "watchEndpoint")) {
+                    if (auto vid = findString(*we, "videoId"); !vid.empty()) {
+                        return std::string(vid);
+                    }
+                }
+                if (auto vid = findString(*avr, "videoId"); !vid.empty()) {
+                    return std::string(vid);
+                }
+            }
+            if (insideAutoplayContext) {
+                if (const auto *cvr = findObject(node, "compactVideoRenderer")) {
+                    if (auto vid = findString(*cvr, "videoId"); !vid.empty()) {
+                        return std::string(vid);
+                    }
+                    if (const auto *ne = findObject(*cvr, "navigationEndpoint")) {
+                        if (const auto *we = findObject(*ne, "watchEndpoint")) {
+                            if (auto vid = findString(*we, "videoId"); !vid.empty()) {
+                                return std::string(vid);
+                            }
+                        }
+                    }
+                }
+            }
+            if (const auto *nvr = findObject(node, "nextVideoRenderer")) {
+                std::string res = searchAutoplay(*nvr, depth + 1, true);
+                if (!res.empty()) {
+                    return res;
+                }
+            }
+            if (const auto *ap = findObject(node, "autoplay")) {
+                std::string res = searchAutoplay(*ap, depth + 1, true);
+                if (!res.empty()) {
+                    return res;
+                }
+            }
+            if (const auto *sets = findArray(node, "sets")) {
+                for (const auto &s : *sets) {
+                    std::string res = searchAutoplay(s, depth + 1, insideAutoplayContext);
+                    if (!res.empty()) {
+                        return res;
+                    }
+                }
+            }
+            for (const auto &[k, v] : node.items()) {
+                if (!isIgnoredWatchSubtree(k)) {
+                    bool nextContext = insideAutoplayContext || (k == "autoplay") || (k == "nextVideoRenderer");
+                    std::string res = searchAutoplay(v, depth + 1, nextContext);
+                    if (!res.empty()) {
+                        return res;
+                    }
+                }
+            }
+        } else if (node.is_array()) {
+            for (const auto &item : node) {
+                std::string res = searchAutoplay(item, depth + 1, insideAutoplayContext);
+                if (!res.empty()) {
+                    return res;
+                }
+            }
+        }
+        return {};
+    };
+    return searchAutoplay(apNode, 0, allowDirectCompact);
+}
+
 void recursivelyFindAccountRenderers(const nlohmann::json &node,
                                      std::vector<std::pair<std::string, const nlohmann::json *>> &outList,
                                      int depth = 0) {
@@ -615,6 +720,9 @@ bool InnerTubeParser::parseClassicVideoRenderer(const nlohmann::json &vr, VideoI
     if (vr.contains("viewCountText")) {
         outItem.viewCount = extractText(vr["viewCountText"]);
     }
+    if (outItem.viewCount.empty() && vr.contains("shortViewCountText")) {
+        outItem.viewCount = extractText(vr["shortViewCountText"]);
+    }
 
     if (vr.contains("publishedTimeText")) {
         outItem.publishedTime = extractText(vr["publishedTimeText"]);
@@ -1043,6 +1151,33 @@ bool InnerTubeParser::parseWatchNextMetadata(const nlohmann::json &root, WatchMe
     if (!root.is_object() && !root.is_array())
         return false;
 
+    const nlohmann::json *twoColumn = findTwoColumnWatchNext(root);
+
+    // 1. Identify active video ID
+    if (outMeta.videoId.empty() && root.is_object()) {
+        if (const auto *cve = findObject(root, "currentVideoEndpoint")) {
+            if (const auto *we = findObject(*cve, "watchEndpoint")) {
+                if (auto vid = findString(*we, "videoId"); !vid.empty()) {
+                    outMeta.videoId = std::string(vid);
+                }
+            }
+        }
+        if (outMeta.videoId.empty()) {
+            if (auto vid = findString(root, "videoId"); !vid.empty()) {
+                outMeta.videoId = std::string(vid);
+            }
+        }
+    }
+    if (outMeta.videoId.empty() && twoColumn != nullptr) {
+        if (const auto *cve = findObject(*twoColumn, "currentVideoEndpoint")) {
+            if (const auto *we = findObject(*cve, "watchEndpoint")) {
+                if (auto vid = findString(*we, "videoId"); !vid.empty()) {
+                    outMeta.videoId = std::string(vid);
+                }
+            }
+        }
+    }
+
     std::function<void(const nlohmann::json &, int)> search = [&](const nlohmann::json &node, int depth) {
         if (depth > 64 || (!node.is_object() && !node.is_array()))
             return;
@@ -1378,8 +1513,69 @@ bool InnerTubeParser::parseWatchNextMetadata(const nlohmann::json &root, WatchMe
 
     outMeta.channelAvatarUrl = utils::normalizeAvatarUrl(std::move(outMeta.channelAvatarUrl), preferWebp);
 
+    // 2. Extract autoplayVideoId from twoColumnWatchNextResults.autoplay (or recursive fallback)
+    if (twoColumn != nullptr) {
+        if (const auto *ap = findObject(*twoColumn, "autoplay")) {
+            outMeta.autoplayVideoId = extractAutoplayVideoId(*ap, true);
+        }
+    }
+    if (outMeta.autoplayVideoId.empty() && root.is_object()) {
+        if (const auto *ap = findObject(root, "autoplay")) {
+            outMeta.autoplayVideoId = extractAutoplayVideoId(*ap, true);
+        }
+    }
+    if (outMeta.autoplayVideoId.empty()) {
+        outMeta.autoplayVideoId = extractAutoplayVideoId(root, false);
+    }
+    if (outMeta.autoplayVideoId == outMeta.videoId) {
+        outMeta.autoplayVideoId.clear();
+    }
+
+    // 3. Extract relatedVideos from twoColumnWatchNextResults.secondaryResults (or root fallback), excluding active videoId
+    const nlohmann::json *secondaryNode = nullptr;
+    if (twoColumn != nullptr) {
+        if (const auto *sec = findObject(*twoColumn, "secondaryResults")) {
+            secondaryNode = sec;
+        }
+    }
+    if (secondaryNode == nullptr && root.is_object()) {
+        if (const auto *sec = findObject(root, "secondaryResults")) {
+            secondaryNode = sec;
+        }
+    }
+
+    const nlohmann::json &targetRecNode = (secondaryNode != nullptr) ? *secondaryNode : root;
+    std::vector<const nlohmann::json *> recRenderers;
+    recursivelyFindVideoRenderers(targetRecNode, recRenderers);
+
+    std::unordered_set<std::string> seenIds;
+    outMeta.relatedVideos.reserve(recRenderers.size());
+    for (const auto *vr : recRenderers) {
+        if (vr == nullptr) {
+            continue;
+        }
+        VideoItem item;
+        if (parseVideoRenderer(*vr, item)) {
+            if (item.duration == "Shorts" || item.id.find("/shorts/") != std::string::npos) {
+                item.isShort = true;
+            }
+            if (!item.id.empty() && item.id != outMeta.videoId && !seenIds.contains(item.id)) {
+                seenIds.insert(item.id);
+                outMeta.relatedVideos.push_back(std::move(item));
+            }
+        }
+    }
+
+    // 4. Extract continuationToken from secondaryResults first (to avoid comment stream continuation tokens)
+    if (secondaryNode != nullptr) {
+        recursivelyFindContinuationToken(*secondaryNode, outMeta.continuationToken);
+    } else if (twoColumn == nullptr) {
+        recursivelyFindContinuationToken(root, outMeta.continuationToken);
+    }
+
     return !outMeta.channelAvatarUrl.empty() || !outMeta.description.empty() || !outMeta.title.empty() ||
-           outMeta.likeCount > 0 || outMeta.isLiked || outMeta.isDisliked;
+           outMeta.likeCount > 0 || outMeta.isLiked || outMeta.isDisliked ||
+           !outMeta.relatedVideos.empty() || !outMeta.autoplayVideoId.empty();
 }
 
 std::vector<std::string> InnerTubeParser::extractAvailableQualities(const nlohmann::json &root) {

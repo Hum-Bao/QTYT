@@ -76,6 +76,12 @@ if (Test-Path "lib\libcurl-x64.dll") {
     Write-Host "[Dependencies] libcurl runtime DLL ready in lib\." -ForegroundColor Green
 }
 
+if (Test-Path "lib\bgutil-pot.exe") {
+    Write-Host "[Dependencies] bgutil-pot POT provider ready in lib\." -ForegroundColor Green
+} else {
+    Write-Host "[Dependencies] Notice: bgutil-pot.exe not found in lib\ folder (needed for unthrottled AV1/VP9)." -ForegroundColor Yellow
+}
+
 # 5. CMake Configure & Parallel Build
 Write-Host "[CMake] Configuring project..." -ForegroundColor Cyan
 cmake -B build -S . -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=$BuildType -DCMAKE_PREFIX_PATH="$qtPrefix" @compilerArgs

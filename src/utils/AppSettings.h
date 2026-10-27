@@ -34,6 +34,14 @@ public:
     [[nodiscard]] bool getAllowAv1() const;
     void setAllowAv1(bool allow);
 
+    // Autoplay next video (default: true)
+    [[nodiscard]] bool getAutoplay() const;
+    void setAutoplay(bool autoplay);
+
+    // Theater mode watch layout (default: false)
+    [[nodiscard]] bool getTheaterMode() const;
+    void setTheaterMode(bool theater);
+
     // Channel selection state
     [[nodiscard]] QString getSelectedChannelPageId() const;
     [[nodiscard]] int getSelectedAuthUserIndex() const;
@@ -62,6 +70,8 @@ private:
     QString m_quality = "1080p";
     bool m_hideShorts = false;
     bool m_allowAv1 = false;
+    bool m_autoplay = true;
+    bool m_theaterMode = false;
 
     QString m_selectedChannelPageId;
     int m_selectedAuthUserIndex = -1;

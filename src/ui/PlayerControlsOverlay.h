@@ -146,6 +146,10 @@ public:
     void setQuality(const QString &quality);
     void setAvailableQualities(const QStringList &qualities);
     void setPlaybackSpeed(double speed);
+    void setAutoplay(bool enabled);
+    [[nodiscard]] bool isAutoplay() const noexcept { return m_isAutoplay; }
+    void setTheaterMode(bool isTheater);
+    [[nodiscard]] bool isTheaterMode() const noexcept { return m_isTheaterMode; }
 
     void showControlsAnimated();
     void hideControlsAnimated();
@@ -161,6 +165,8 @@ signals:
     void seekingChanged(bool isSeeking);
     void volumeChanged(int volume);
     void fullscreenToggleRequested();
+    void autoplayToggled(bool enabled);
+    void theaterModeToggleRequested();
     void controlsVisibilityChanged(bool visible);
     void qualityChanged(const QString &quality);
     void playbackSpeedChanged(double speed);
@@ -192,7 +198,9 @@ private:
     bool m_isVolumeExpanded = false;
 
     QLabel *m_timeLabel = nullptr;
+    QPushButton *m_autoplayBtn = nullptr;
     QPushButton *m_settingsBtn = nullptr;
+    QPushButton *m_theaterBtn = nullptr;
     QPushButton *m_fullscreenBtn = nullptr;
     PlayerSettingsPopup *m_settingsPopup = nullptr;
     bool m_isMenuOpen = false;
@@ -203,6 +211,8 @@ private:
 
     bool m_isPlaying = false;
     bool m_isFullscreen = false;
+    bool m_isAutoplay = true;
+    bool m_isTheaterMode = false;
     int m_preMuteVolume = 100;
     double m_duration = 0.0;
     double m_position = 0.0;

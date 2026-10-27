@@ -12,8 +12,18 @@
 class FeedView : public QListView {
     Q_OBJECT
 public:
+    using CardLayoutMode = VideoCardDelegate::CardLayoutMode;
+    using QListView::setLayoutMode;
+
     explicit FeedView(QWidget *parent = nullptr);
     ~FeedView() override;
+
+    void setLayoutMode(CardLayoutMode mode);
+    [[nodiscard]] CardLayoutMode layoutMode() const noexcept { return m_layoutMode; }
+    [[nodiscard]] CardLayoutMode cardLayoutMode() const noexcept { return m_layoutMode; }
+
+    void setForwardWheelEvents(bool forward) noexcept { m_forwardWheelEvents = forward; }
+    [[nodiscard]] bool forwardWheelEvents() const noexcept { return m_forwardWheelEvents; }
 
     [[nodiscard]] FeedModel *model() const noexcept { return m_model; }
 
@@ -37,6 +47,7 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
 
 private slots:
     void onItemClicked(const QModelIndex &index);
@@ -49,6 +60,8 @@ private:
     std::unique_ptr<ThumbnailLoader> m_thumbLoader;
     QTimer *m_hoverTimer = nullptr;
     QModelIndex m_hoveredIndex;
+    CardLayoutMode m_layoutMode{CardLayoutMode::Grid};
+    bool m_forwardWheelEvents = false;
 
     void updateGridLayout();
 };

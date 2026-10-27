@@ -895,6 +895,430 @@ void testWatchNextMetadataLikes() {
     std::cout << "[PASS] testWatchNextMetadataLikes\n";
 }
 
+void testClassicVideoRendererShortViewCountText() {
+    using lightyt::InnerTubeParser;
+
+    // 1. shortViewCountText with simpleText when viewCountText is missing
+    nlohmann::json vrSimple = nlohmann::json::parse(R"({
+        "videoId": "shortViewVid1",
+        "title": { "simpleText": "Short View Simple Video" },
+        "shortViewCountText": { "simpleText": "1.2M views" }
+    })");
+    VideoItem item1;
+    CHECK(InnerTubeParser::parseClassicVideoRenderer(vrSimple, item1));
+    CHECK_EQ(item1.id, "shortViewVid1");
+    CHECK_EQ(item1.title, "Short View Simple Video");
+    CHECK_EQ(item1.viewCount, "1.2M views");
+
+    // 2. shortViewCountText with runs when viewCountText is missing
+    nlohmann::json vrRuns = nlohmann::json::parse(R"({
+        "videoId": "shortViewVid2",
+        "title": { "runs": [{ "text": "Short View Runs Video" }] },
+        "shortViewCountText": { "runs": [{ "text": "850K views" }] }
+    })");
+    VideoItem item2;
+    CHECK(InnerTubeParser::parseClassicVideoRenderer(vrRuns, item2));
+    CHECK_EQ(item2.id, "shortViewVid2");
+    CHECK_EQ(item2.viewCount, "850K views");
+
+    // 3. Both viewCountText and shortViewCountText present: viewCountText takes priority
+    nlohmann::json vrBoth = nlohmann::json::parse(R"({
+        "videoId": "shortViewVid3",
+        "title": { "simpleText": "Both View Counts Video" },
+        "viewCountText": { "simpleText": "1,234,567 views" },
+        "shortViewCountText": { "simpleText": "1.2M views" }
+    })");
+    VideoItem item3;
+    CHECK(InnerTubeParser::parseClassicVideoRenderer(vrBoth, item3));
+    CHECK_EQ(item3.id, "shortViewVid3");
+    CHECK_EQ(item3.viewCount, "1,234,567 views");
+
+    std::cout << "[PASS] testClassicVideoRendererShortViewCountText\n";
+}
+
+void testWatchNextMetadataRecommendationsAutoplayAndContinuation() {
+    nlohmann::json watchNextJson = nlohmann::json::parse(R"json({
+        "currentVideoEndpoint": {
+            "watchEndpoint": {
+                "videoId": "active_vid_123"
+            }
+        },
+        "contents": {
+            "twoColumnWatchNextResults": {
+                "results": {
+                    "results": {
+                        "contents": [
+                            {
+                                "videoPrimaryInfoRenderer": {
+                                    "title": { "runs": [{ "text": "Active Video Title" }] },
+                                    "viewCount": { "videoViewCountRenderer": { "viewCount": { "simpleText": "100K views" } } },
+                                    "dateText": { "simpleText": "Yesterday" }
+                                }
+                            },
+                            {
+                                "itemSectionRenderer": {
+                                    "contents": [
+                                        {
+                                            "continuationItemRenderer": {
+                                                "continuationEndpoint": {
+                                                    "continuationCommand": {
+                                                        "token": "comments_token_should_be_ignored"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                },
+                "autoplay": {
+                    "autoplay": {
+                        "sets": [
+                            {
+                                "nextVideoRenderer": {
+                                    "autoplayVideoRenderer": {
+                                        "navigationEndpoint": {
+                                            "watchEndpoint": {
+                                                "videoId": "autoplay_vid_456"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                "secondaryResults": {
+                    "secondaryResults": {
+                        "results": [
+                            {
+                                "compactVideoRenderer": {
+                                    "videoId": "active_vid_123",
+                                    "title": { "simpleText": "Active Video Duplicate (should be excluded)" }
+                                }
+                            },
+                            {
+                                "compactVideoRenderer": {
+                                    "videoId": "rec_vid_001",
+                                    "title": { "simpleText": "First Recommendation" },
+                                    "shortBylineText": { "simpleText": "Creator A" },
+                                    "shortViewCountText": { "simpleText": "250K views" },
+                                    "lengthText": { "simpleText": "10:15" },
+                                    "thumbnail": {
+                                        "thumbnails": [
+                                            { "url": "https://i.ytimg.com/vi/rec_vid_001/hqdefault.jpg", "width": 336, "height": 188 }
+                                        ]
+                                    }
+                                }
+                            },
+                            {
+                                "itemSectionRenderer": {
+                                    "contents": [
+                                        {
+                                            "compactVideoRenderer": {
+                                                "videoId": "rec_vid_002",
+                                                "title": { "runs": [{ "text": "Second Recommendation" }] },
+                                                "shortBylineText": { "runs": [{ "text": "Creator B" }] },
+                                                "shortViewCountText": { "runs": [{ "text": "500K views" }] },
+                                                "lengthText": { "simpleText": "05:40" }
+                                            }
+                                        }
+                                    ]
+                                }
+                            },
+                            {
+                                "compactVideoRenderer": {
+                                    "videoId": "rec_vid_001",
+                                    "title": { "simpleText": "First Recommendation Duplicate" }
+                                }
+                            },
+                            {
+                                "continuationItemRenderer": {
+                                    "continuationEndpoint": {
+                                        "continuationCommand": {
+                                            "token": "recommendations_continuation_token_789"
+                                        }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    })json");
+
+    WatchMetadata meta;
+    bool ok = lightyt::InnerTubeParser::parseWatchNextMetadata(watchNextJson, meta);
+    CHECK(ok);
+    CHECK_EQ(meta.videoId, "active_vid_123");
+    CHECK_EQ(meta.autoplayVideoId, "autoplay_vid_456");
+    CHECK_EQ(meta.continuationToken, "recommendations_continuation_token_789");
+
+    // Verify relatedVideos size (active video excluded, duplicate rec_vid_001 deduplicated)
+    CHECK_EQ(meta.relatedVideos.size(), 2);
+    if (meta.relatedVideos.size() >= 2) {
+        CHECK_EQ(meta.relatedVideos[0].id, "rec_vid_001");
+        CHECK_EQ(meta.relatedVideos[0].title, "First Recommendation");
+        CHECK_EQ(meta.relatedVideos[0].author, "Creator A");
+        CHECK_EQ(meta.relatedVideos[0].viewCount, "250K views");
+        CHECK_EQ(meta.relatedVideos[0].duration, "10:15");
+
+        CHECK_EQ(meta.relatedVideos[1].id, "rec_vid_002");
+        CHECK_EQ(meta.relatedVideos[1].title, "Second Recommendation");
+        CHECK_EQ(meta.relatedVideos[1].author, "Creator B");
+        CHECK_EQ(meta.relatedVideos[1].viewCount, "500K views");
+        CHECK_EQ(meta.relatedVideos[1].duration, "05:40");
+    }
+
+    for (const auto &item : meta.relatedVideos) {
+        CHECK(item.id != "active_vid_123");
+    }
+
+    std::cout << "[PASS] testWatchNextMetadataRecommendationsAutoplayAndContinuation\n";
+}
+
+void testWatchNextActiveVideoExclusionPreSet() {
+    nlohmann::json jsonWithCandidates = nlohmann::json::parse(R"({
+        "secondaryResults": {
+            "results": [
+                {
+                    "compactVideoRenderer": {
+                        "videoId": "preset_id_999",
+                        "title": { "simpleText": "Candidate matching preset ID" }
+                    }
+                },
+                {
+                    "compactVideoRenderer": {
+                        "videoId": "allowed_vid_001",
+                        "title": { "simpleText": "Allowed Video 1" },
+                        "shortViewCountText": { "simpleText": "10K views" }
+                    }
+                },
+                {
+                    "compactVideoRenderer": {
+                        "videoId": "allowed_vid_002",
+                        "title": { "simpleText": "Allowed Video 2" },
+                        "shortViewCountText": { "simpleText": "20K views" }
+                    }
+                }
+            ]
+        }
+    })");
+
+    WatchMetadata meta;
+    meta.videoId = "preset_id_999";
+    bool ok = lightyt::InnerTubeParser::parseWatchNextMetadata(jsonWithCandidates, meta);
+    CHECK(ok);
+    CHECK_EQ(meta.videoId, "preset_id_999");
+    CHECK_EQ(meta.relatedVideos.size(), 2);
+    if (meta.relatedVideos.size() >= 2) {
+        CHECK_EQ(meta.relatedVideos[0].id, "allowed_vid_001");
+        CHECK_EQ(meta.relatedVideos[1].id, "allowed_vid_002");
+    }
+    for (const auto &item : meta.relatedVideos) {
+        CHECK(item.id != "preset_id_999");
+    }
+
+    std::cout << "[PASS] testWatchNextActiveVideoExclusionPreSet\n";
+}
+
+void testWatchNextContinuationTokenScopingCommentsIsolation() {
+    // 1. Two-column response where secondaryResults has recommendations but NO continuation token,
+    // while the comments section in results contains a continuationItemRenderer token.
+    nlohmann::json responseWithComments = {
+        {"twoColumnWatchNextResults", {
+            {"results", {
+                {"results", {
+                    {"contents", nlohmann::json::array({
+                        {
+                            {"itemSectionRenderer", {
+                                {"contents", nlohmann::json::array({
+                                    {
+                                        {"continuationItemRenderer", {
+                                            {"continuationEndpoint", {
+                                                {"continuationCommand", {
+                                                    {"token", "COMMENT_STREAM_TOKEN_XYZ"}
+                                                }}
+                                            }}
+                                        }}
+                                    }
+                                })}
+                            }}
+                        }
+                    })}
+                }}
+            }},
+            {"secondaryResults", {
+                {"secondaryResults", {
+                    {"results", nlohmann::json::array({
+                        {
+                            {"compactVideoRenderer", {
+                                {"videoId", "rec_finite_001"},
+                                {"title", {{"simpleText", "Finite Rec 1"}}}
+                            }}
+                        },
+                        {
+                            {"compactVideoRenderer", {
+                                {"videoId", "rec_finite_002"},
+                                {"title", {{"simpleText", "Finite Rec 2"}}}
+                            }}
+                        }
+                    })}
+                }}
+            }}
+        }}
+    };
+
+    WatchMetadata meta;
+    meta.videoId = "current_playing_123";
+    bool ok = lightyt::InnerTubeParser::parseWatchNextMetadata(responseWithComments, meta);
+    CHECK(ok);
+    CHECK_EQ(meta.relatedVideos.size(), 2);
+    // Crucial check: continuationToken must NOT be polluted by the comment stream token!
+    CHECK(meta.continuationToken.empty());
+    CHECK(meta.continuationToken != "COMMENT_STREAM_TOKEN_XYZ");
+
+    // 2. Response without twoColumnWatchNextResults (e.g. continuation pagination payload)
+    // where continuation token is at root/onResponseReceivedEndpoints level
+    nlohmann::json continuationPayload = {
+        {"onResponseReceivedEndpoints", nlohmann::json::array({
+            {
+                {"appendContinuationItemsAction", {
+                    {"continuationItems", nlohmann::json::array({
+                        {
+                            {"compactVideoRenderer", {
+                                {"videoId", "rec_page2_001"},
+                                {"title", {{"simpleText", "Page 2 Rec"}}}
+                            }}
+                        },
+                        {
+                            {"continuationItemRenderer", {
+                                {"continuationEndpoint", {
+                                    {"continuationCommand", {
+                                        {"token", "NEXT_RECOMMENDATIONS_TOKEN_ABC"}
+                                    }}
+                                }}
+                            }}
+                        }
+                    })}
+                }}
+            }
+        })}
+    };
+
+    WatchMetadata page2Meta;
+    bool okPage2 = lightyt::InnerTubeParser::parseWatchNextMetadata(continuationPayload, page2Meta);
+    CHECK(okPage2);
+    CHECK_EQ(page2Meta.relatedVideos.size(), 1);
+    CHECK_EQ(page2Meta.relatedVideos[0].id, "rec_page2_001");
+    CHECK_EQ(page2Meta.continuationToken, "NEXT_RECOMMENDATIONS_TOKEN_ABC");
+
+    std::cout << "[PASS] testWatchNextContinuationTokenScopingCommentsIsolation\n";
+}
+
+void testWatchNextAutoplaySelfLoopPrevention() {
+    // 1. Autoplay matching current videoId must be cleared to prevent infinite self-loop
+    nlohmann::json loopPayload = {
+        {"currentVideoEndpoint", {
+            {"watchEndpoint", {
+                {"videoId", "active_loop_video_1"}
+            }}
+        }},
+        {"twoColumnWatchNextResults", {
+            {"autoplay", {
+                {"autoplay", {
+                    {"sets", nlohmann::json::array({
+                        {
+                            {"nextVideoRenderer", {
+                                {"autoplayVideoRenderer", {
+                                    {"navigationEndpoint", {
+                                        {"watchEndpoint", {
+                                            {"videoId", "active_loop_video_1"}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }
+                    })}
+                }}
+            }},
+            {"secondaryResults", {
+                {"results", nlohmann::json::array({
+                    {
+                        {"compactVideoRenderer", {
+                            {"videoId", "rec_fallback_vid"},
+                            {"title", {{"simpleText", "Fallback Recommendation"}}}
+                        }}
+                    }
+                })}
+            }}
+        }}
+    };
+
+    WatchMetadata loopMeta;
+    bool okLoop = lightyt::InnerTubeParser::parseWatchNextMetadata(loopPayload, loopMeta);
+    CHECK(okLoop);
+    CHECK_EQ(loopMeta.videoId, "active_loop_video_1");
+    // Autoplay matched active videoId, so it must be cleared:
+    CHECK(loopMeta.autoplayVideoId.empty());
+    CHECK_EQ(loopMeta.relatedVideos.size(), 1);
+    CHECK_EQ(loopMeta.relatedVideos[0].id, "rec_fallback_vid");
+
+    // 2. Autoplay with a different video ID is preserved
+    nlohmann::json normalPayload = {
+        {"currentVideoEndpoint", {
+            {"watchEndpoint", {
+                {"videoId", "active_vid_888"}
+            }}
+        }},
+        {"twoColumnWatchNextResults", {
+            {"autoplay", {
+                {"autoplay", {
+                    {"sets", nlohmann::json::array({
+                        {
+                            {"nextVideoRenderer", {
+                                {"autoplayVideoRenderer", {
+                                    {"navigationEndpoint", {
+                                        {"watchEndpoint", {
+                                            {"videoId", "distinct_next_vid_999"}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }
+                    })}
+                }}
+            }}
+        }}
+    };
+
+    WatchMetadata normalMeta;
+    bool okNormal = lightyt::InnerTubeParser::parseWatchNextMetadata(normalPayload, normalMeta);
+    CHECK(okNormal);
+    CHECK_EQ(normalMeta.videoId, "active_vid_888");
+    CHECK_EQ(normalMeta.autoplayVideoId, "distinct_next_vid_999");
+
+    std::cout << "[PASS] testWatchNextAutoplaySelfLoopPrevention\n";
+}
+
+void testContinuationKindRouting() {
+    CHECK(static_cast<uint8_t>(ContinuationKind::Browse) == 0);
+    CHECK(static_cast<uint8_t>(ContinuationKind::Search) == 1);
+    CHECK(static_cast<uint8_t>(ContinuationKind::WatchNext) == 2);
+
+    YouTubeClient client;
+    std::string errMsg;
+    // Empty continuation token should immediately return empty FeedResult with error message
+    FeedResult emptyRes = client.fetchContinuation("", errMsg, ContinuationKind::WatchNext);
+    CHECK(emptyRes.videos.empty());
+    CHECK_EQ(errMsg, "Empty continuation token");
+
+    std::cout << "[PASS] testContinuationKindRouting\n";
+}
+
 void testCookieManagerFallbackSapisid3P() {
     CookieManager mgr;
     std::string sample = "__Secure-3PAPISID=Only3PSapisidVal123; SID=SampleSid456";
@@ -2377,6 +2801,12 @@ int main() noexcept {
         testJsonWatchNextMetadata();
         testLikeCountParsing();
         testWatchNextMetadataLikes();
+        testClassicVideoRendererShortViewCountText();
+        testWatchNextMetadataRecommendationsAutoplayAndContinuation();
+        testWatchNextActiveVideoExclusionPreSet();
+        testWatchNextContinuationTokenScopingCommentsIsolation();
+        testWatchNextAutoplaySelfLoopPrevention();
+        testContinuationKindRouting();
         testStreamResolver();
         testStreamResolverExpireParsing();
         testProcessCommandLineQuoting();

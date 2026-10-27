@@ -20,6 +20,8 @@
 #include <memory>
 #include <string>
 
+class QKeyEvent;
+
 struct FeedTaskResult {
     FeedResult result;
     std::string error;
@@ -47,6 +49,7 @@ private slots:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
 private:
     template<typename T, typename Func>

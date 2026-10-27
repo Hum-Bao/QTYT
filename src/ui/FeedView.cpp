@@ -1,8 +1,11 @@
 #include "FeedView.h"
 
+#include <QCoreApplication>
 #include <QMouseEvent>
 #include <QResizeEvent>
 #include <QScrollBar>
+#include <QScrollArea>
+#include <QWheelEvent>
 #include <algorithm>
 
 FeedView::FeedView(QWidget *parent)
@@ -57,6 +60,46 @@ FeedView::~FeedView() {
     }
 }
 
+void FeedView::setLayoutMode(CardLayoutMode mode) {
+    if (m_layoutMode == mode)
+        return;
+
+    m_layoutMode = mode;
+    if (m_delegate) {
+        m_delegate->setLayoutMode(mode);
+    }
+
+    if (m_layoutMode == CardLayoutMode::CompactHorizontal) {
+        m_forwardWheelEvents = true;
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setStyleSheet("QListView {"
+                      "  background-color: transparent;"
+                      "  border: none;"
+                      "  padding: 0px;"
+                      "}");
+    } else {
+        m_forwardWheelEvents = false;
+        setMinimumHeight(0);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setStyleSheet("QListView {"
+                      "  background-color: #0f0f0f;"
+                      "  border: none;"
+                      "  padding: 12px;"
+                      "}"
+                      "QScrollBar:vertical {"
+                      "  background: #0f0f0f; width: 10px; margin: 0px;"
+                      "}"
+                      "QScrollBar::handle:vertical {"
+                      "  background: #333333; min-height: 20px; border-radius: 5px;"
+                      "}"
+                      "QScrollBar::handle:vertical:hover { background: #555555; }"
+                      "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }");
+    }
+    updateGridLayout();
+}
+
 void FeedView::setVideos(const std::vector<VideoItem> &videos) {
     if (m_thumbLoader) {
         m_thumbLoader->cancelPending();
@@ -81,6 +124,7 @@ void FeedView::clearVideos() {
     if (m_model) {
         m_model->clearVideos();
     }
+    updateGridLayout();
 }
 
 void FeedView::setHideShorts(bool hide) {
@@ -95,6 +139,24 @@ bool FeedView::isHideShorts() const {
 }
 
 void FeedView::updateGridLayout() {
+    if (m_layoutMode == CardLayoutMode::CompactHorizontal) {
+        int availableWidth = std::max(240, viewport()->width());
+        constexpr int compactHeight = 102;
+        QSize cellSize(availableWidth, compactHeight);
+        if (m_delegate) {
+            m_delegate->setCardSize(cellSize);
+        }
+        setGridSize(cellSize);
+        if (m_model) {
+            int totalHeight = m_model->rowCount() * compactHeight;
+            setMinimumHeight(totalHeight);
+        } else {
+            setMinimumHeight(0);
+        }
+        updateGeometry();
+        return;
+    }
+
     int availableWidth = std::max(300, viewport()->width() - 4);
 
     constexpr int minCardWidth = 300;
@@ -115,8 +177,10 @@ void FeedView::updateGridLayout() {
 void FeedView::resizeEvent(QResizeEvent *event) {
     QListView::resizeEvent(event);
     updateGridLayout();
-    if (m_model && m_model->rowCount() >= 20 && verticalScrollBar()->maximum() == 0) {
-        emit requestMoreVideos();
+    if (m_layoutMode != CardLayoutMode::CompactHorizontal) {
+        if (m_model && m_model->rowCount() >= 20 && verticalScrollBar()->maximum() == 0) {
+            emit requestMoreVideos();
+        }
     }
 }
 
@@ -139,6 +203,21 @@ void FeedView::leaveEvent(QEvent *event) {
     m_hoveredIndex = QModelIndex();
 }
 
+void FeedView::wheelEvent(QWheelEvent *event) {
+    if (m_forwardWheelEvents) {
+        QWidget *p = parentWidget();
+        while (p) {
+            if (auto *sa = qobject_cast<QScrollArea *>(p)) {
+                QCoreApplication::sendEvent(sa->viewport(), event);
+                event->accept();
+                return;
+            }
+            p = p->parentWidget();
+        }
+    }
+    QListView::wheelEvent(event);
+}
+
 void FeedView::onHoverTimeout() {
     if (!m_hoveredIndex.isValid() || !m_model)
         return;
@@ -158,6 +237,8 @@ void FeedView::onItemClicked(const QModelIndex &index) {
 }
 
 void FeedView::onScrollValueChanged(int value) {
+    if (m_layoutMode == CardLayoutMode::CompactHorizontal)
+        return;
     int max = verticalScrollBar()->maximum();
     if (max > 0) {
         if (value >= (max * 85 / 100)) {

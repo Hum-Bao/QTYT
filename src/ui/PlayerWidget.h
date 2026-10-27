@@ -17,12 +17,15 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 class YouTubeClient;
 class MpvGlWidget;
 class QScrollArea;
+class QGridLayout;
 class PlayerControlsOverlay;
 class StatsForNerdsWidget;
+class FeedView;
 
 class PlayerWidget : public QWidget {
     Q_OBJECT
@@ -46,10 +49,22 @@ public:
     void setVolume(int value);
 
     void setFullscreen(bool fullscreen);
+    [[nodiscard]] bool isFullscreen() const noexcept { return m_isFullscreen; }
+
+    void setTheaterMode(bool theater);
+    [[nodiscard]] bool isTheaterMode() const noexcept { return m_isTheaterMode; }
+    void toggleTheaterMode();
+
+    void setAutoplay(bool autoplay);
+    [[nodiscard]] bool isAutoplay() const noexcept { return m_isAutoplay.load(); }
+
+    void playNextVideo();
 
 signals:
     void backRequested();
     void fullscreenToggleRequested();
+    void theaterModeToggleRequested();
+    void theaterModeToggled(bool isTheater);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -68,6 +83,7 @@ private slots:
     void onShareClicked();
     void onSubscribeClicked();
     void onToggleDescriptionClicked();
+    void onAutoplayToggled(bool enabled);
 
 private:
     QWidget *m_surfaceContainer = nullptr;
@@ -76,6 +92,8 @@ private:
     PlayerControlsOverlay *m_controlsOverlay = nullptr;
     StatsForNerdsWidget *m_statsWidget = nullptr;
     QWidget *m_metadataContainer = nullptr;
+    QGridLayout *m_watchGridLayout = nullptr;
+    FeedView *m_recommendationsView = nullptr;
     QLabel *m_titleLabel = nullptr;
     QLabel *m_authorLabel = nullptr;
     QLabel *m_subscriberCountLabel = nullptr;
@@ -96,6 +114,11 @@ private:
 
     bool m_userIsSeeking = false;
     bool m_isFullscreen = false;
+    bool m_isTheaterMode = false;
+    std::atomic<bool> m_isAutoplay{true};
+    std::string m_autoplayVideoId;
+    std::vector<VideoItem> m_relatedVideos;
+    std::string m_nextContinuationToken;
     int m_preMuteVolume = 100;
     double m_fallbackDuration = 0.0;
     std::chrono::steady_clock::time_point m_lastSeekTime{};
@@ -129,6 +152,7 @@ private:
 
     void setupUi();
     void setupEvents();
+    void applyLayoutMode(bool isTheater, bool isFullscreen);
     void updatePlayerLayout();
     void updateLikeDislikeUi();
     void updateDescriptionUi();
