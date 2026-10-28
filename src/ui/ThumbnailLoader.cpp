@@ -216,9 +216,9 @@ public:
         if (image.isNull()) {
             QMetaObject::invokeMethod(
                 qApp,
-                [loader = m_loader, cancel = m_cancelToken, url = m_url]() {
+                [loader = m_loader, cancel = m_cancelToken, url = m_url, size = m_size]() {
                     if (loader && (!cancel || !cancel->load())) {
-                        loader->onAvatarTaskFailed(url);
+                        loader->onAvatarTaskFailed(url, size);
                     }
                 },
                 Qt::QueuedConnection);
@@ -280,7 +280,8 @@ QImage ThumbnailLoader::decodeImageFromBytes(const uint8_t *data, size_t size) {
     }
 
     // Check for WebP magic bytes (RIFF....WEBP) or JPEG and retry with explicit format hints
-    if (size >= 12 && data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F') {
+    if (size >= 12 && data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' &&
+        data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P') {
         if (image.loadFromData(data, static_cast<int>(size), "WEBP")) {
             return image;
         }
@@ -309,6 +310,16 @@ ThumbnailLoader::ThumbnailLoader(QObject *parent)
     : QObject(parent), m_cancelToken(std::make_shared<std::atomic<bool>>(false)) {
     m_threadPool.setMaxThreadCount(3);
     m_memoryCache.setMaxCost(64 * 1024 * 1024);  // 64 MB memory cap for HD 640x360 thumbnails
+}
+
+ThumbnailLoader &ThumbnailLoader::instance() {
+    static ThumbnailLoader s_instance;
+    return s_instance;
+}
+
+void ThumbnailLoader::shutdown() {
+    cancelPending();
+    m_threadPool.waitForDone();
 }
 
 ThumbnailLoader::~ThumbnailLoader() {
@@ -387,33 +398,39 @@ QPixmap ThumbnailLoader::getCached(const std::string &url) const {
 
 void ThumbnailLoader::onAvatarTaskSucceeded(const std::string &url, int size, const QPixmap &pixmap) {
     if (!url.empty()) {
+        std::string flightKey = "avatar:" + std::to_string(size) + ":" + url;
         {
             std::lock_guard lock(m_cacheMutex);
-            m_inFlight.erase("avatar:" + url);
-            m_failedUrls.erase("avatar:" + url);
+            m_inFlight.erase(flightKey);
+            m_failedUrls.erase(flightKey);
             m_avatarCache.insert(AvatarKey{url, size}, new QPixmap(pixmap), 1);
         }
         emit avatarLoaded(url, pixmap);
+        emit avatarReady(url, size, pixmap);
     }
 }
 
-void ThumbnailLoader::onAvatarTaskFailed(const std::string &url) {
+void ThumbnailLoader::onAvatarTaskFailed(const std::string &url, int size) {
+    std::string flightKey = "avatar:" + std::to_string(size) + ":" + url;
     std::lock_guard lock(m_cacheMutex);
-    m_inFlight.erase("avatar:" + url);
-    m_failedUrls["avatar:" + url] = std::chrono::steady_clock::now();
+    m_inFlight.erase(flightKey);
+    m_failedUrls[flightKey] = std::chrono::steady_clock::now();
 }
 
-void ThumbnailLoader::requestAvatar(const std::string &url, int size) {
+QPixmap ThumbnailLoader::requestAvatar(const std::string &url, int size) {
     if (url.empty())
-        return;
+        return {};
 
     std::shared_ptr<std::atomic<bool>> token;
     {
         std::lock_guard lock(m_cacheMutex);
         AvatarKey key{url, size};
-        std::string flightKey = "avatar:" + url;
-        if (m_avatarCache.contains(key) || m_inFlight.contains(flightKey)) {
-            return;
+        if (QPixmap *cached = m_avatarCache.object(key)) {
+            return *cached;
+        }
+        std::string flightKey = "avatar:" + std::to_string(size) + ":" + url;
+        if (m_inFlight.contains(flightKey)) {
+            return {};
         }
 
         auto it = m_failedUrls.find(flightKey);
@@ -421,7 +438,7 @@ void ThumbnailLoader::requestAvatar(const std::string &url, int size) {
             auto elapsed =
                 std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - it->second).count();
             if (elapsed < 60)
-                return;
+                return {};
         }
 
         m_inFlight.insert(flightKey);
@@ -429,6 +446,7 @@ void ThumbnailLoader::requestAvatar(const std::string &url, int size) {
     }
 
     m_threadPool.start(new AvatarTask(url, size, this, std::move(token)));
+    return {};
 }
 
 bool ThumbnailLoader::hasCachedAvatar(const std::string &url, int size) const {

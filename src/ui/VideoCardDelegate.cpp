@@ -7,7 +7,6 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QTextLayout>
-#include <mutex>
 #include <unordered_map>
 
 namespace {
@@ -45,18 +44,15 @@ struct TitleCacheKeyHash {
     }
 };
 
-std::mutex s_titleCacheMutex;
+// Accessed exclusively on the Qt GUI thread
 std::unordered_map<TitleCacheKey, TitleLayoutData, TitleCacheKeyHash> s_titleCache;
 
 TitleLayoutData getOrComputeTitleLayout(const QString &title, const QFont &font, int width) {
     int ptSize = font.pointSizeF() > 0 ? static_cast<int>(font.pointSizeF() * 10.0) : font.pixelSize();
     TitleCacheKey key{title, width, ptSize};
-    {
-        std::lock_guard lock(s_titleCacheMutex);
-        auto it = s_titleCache.find(key);
-        if (it != s_titleCache.end()) {
-            return it->second;
-        }
+    auto it = s_titleCache.find(key);
+    if (it != s_titleCache.end()) {
+        return it->second;
     }
 
     TitleLayoutData data;
@@ -82,13 +78,10 @@ TitleLayoutData getOrComputeTitleLayout(const QString &title, const QFont &font,
     }
     layout.endLayout();
 
-    {
-        std::lock_guard lock(s_titleCacheMutex);
-        if (s_titleCache.size() > 500) {
-            s_titleCache.clear();
-        }
-        s_titleCache[key] = data;
+    if (s_titleCache.size() >= 1024) {
+        s_titleCache.erase(s_titleCache.begin());
     }
+    s_titleCache[key] = data;
     return data;
 }
 

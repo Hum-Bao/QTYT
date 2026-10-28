@@ -82,6 +82,12 @@ if (Test-Path "lib\bgutil-pot.exe") {
     Write-Host "[Dependencies] Notice: bgutil-pot.exe not found in lib\ folder (needed for unthrottled AV1/VP9)." -ForegroundColor Yellow
 }
 
+if (Test-Path "lib\yt-dlp-plugins\bgutil-ytdlp-pot-provider\yt_dlp_plugins") {
+    Write-Host "[Dependencies] bgutil-ytdlp-pot-provider plugin ready in lib\yt-dlp-plugins\." -ForegroundColor Green
+} else {
+    Write-Host "[Dependencies] Notice: bgutil-ytdlp-pot-provider plugin not found in lib\yt-dlp-plugins\ (see README.md)." -ForegroundColor Yellow
+}
+
 # 5. CMake Configure & Parallel Build
 Write-Host "[CMake] Configuring project..." -ForegroundColor Cyan
 cmake -B build -S . -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=$BuildType -DCMAKE_PREFIX_PATH="$qtPrefix" @compilerArgs
@@ -115,7 +121,7 @@ if (-not (Test-Path $exePath)) {
 }
 
 Write-Host "[Deploy] Running windeployqt..." -ForegroundColor Cyan
-& "$qtPrefix\bin\windeployqt.exe" --no-compiler-runtime $exePath
+& "$qtPrefix\bin\windeployqt.exe" --compiler-runtime $exePath
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[WARN] windeployqt exited with code $LASTEXITCODE" -ForegroundColor Yellow
 }

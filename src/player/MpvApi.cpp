@@ -1,13 +1,15 @@
 #include "MpvApi.h"
 
 #include "utils/AppPaths.h"
+#include "utils/Logger.h"
+#include "utils/StringUtils.h"
 
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <vector>
 
 #ifdef _WIN32
-#include "utils/StringUtils.h"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -18,67 +20,72 @@
 namespace lightyt {
 
 #ifdef _WIN32
-namespace {
-
-bool isValidBinaryWin(const std::filesystem::path &p) {
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(p, ec))
-        return false;
-    // Reject shims and stubs under 1MB (e.g. WinGet Links, Scoop stubs) that loop-spawn
-    auto sz = std::filesystem::file_size(p, ec);
-    if (ec || sz < 1048576)
-        return false;
-    return true;
-}
-
-}  // namespace
-
 std::string findFileInPaths(std::string_view filename) {
-    std::string filenameStr(filename);
+    // 1. Check bundled local/relative lib/ directories
     for (const auto &cand : paths::getLocalCandidatePaths(filename)) {
-        if (isValidBinaryWin(cand))
-            return cand.string();
+        if (paths::isValidBinary(cand, 1024 * 1024)) {
+            return utils::pathToUtf8(cand);
+        }
     }
 
-    std::wstring wFilename = utils::toWString(filename);
-    std::array<wchar_t, MAX_PATH> searchBuf{};
-    if (SearchPathW(nullptr, wFilename.c_str(), nullptr, static_cast<DWORD>(searchBuf.size()), searchBuf.data(),
-                    nullptr) > 0) {
+    // 2. Search Windows system PATH with dynamically grown buffer
+    std::filesystem::path wFilename = utils::u8ToPath(filename);
+    std::vector<wchar_t> searchBuf(MAX_PATH);
+    DWORD len = SearchPathW(nullptr, wFilename.c_str(), nullptr, static_cast<DWORD>(searchBuf.size()), searchBuf.data(),
+                            nullptr);
+    if (len >= searchBuf.size()) {
+        searchBuf.resize(len + 1);
+        len = SearchPathW(nullptr, wFilename.c_str(), nullptr, static_cast<DWORD>(searchBuf.size()), searchBuf.data(),
+                          nullptr);
+    }
+    if (len > 0 && len < searchBuf.size()) {
         std::filesystem::path p(searchBuf.data());
-        if (isValidBinaryWin(p)) {
-            return p.string();
+        if (paths::isValidBinary(p, 1024 * 1024)) {
+            return utils::pathToUtf8(p);
         }
     }
 
-    const char *localAppData = std::getenv("LOCALAPPDATA");
-    if (localAppData != nullptr && localAppData[0] != '\0') {
-        std::error_code ec;
-        std::filesystem::path pkgDir = std::filesystem::path(localAppData) / "Microsoft" / "WinGet" / "Packages";
-        if (std::filesystem::is_directory(pkgDir, ec)) {
-            for (const auto &entry : std::filesystem::recursive_directory_iterator(
-                     pkgDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-                if (ec)
-                    break;
-                if (entry.is_regular_file(ec) && entry.path().filename().string() == filenameStr) {
-                    if (isValidBinaryWin(entry.path())) {
-                        return entry.path().string();
-                    }
-                }
-            }
+    // 3. Search WinGet installed packages (shinchiro.mpv)
+    auto wingetBinary = paths::findWinGetPackageBinary("shinchiro.mpv", filename, 1024 * 1024);
+    if (!wingetBinary.empty()) {
+        return utils::pathToUtf8(wingetBinary);
+    }
+
+    // 4. Standard Program Files and LocalAppData installation paths
+    const wchar_t *wProgFiles = _wgetenv(L"ProgramFiles");
+    if (wProgFiles != nullptr && wProgFiles[0] != L'\0') {
+        std::filesystem::path progFiles = std::filesystem::path(wProgFiles) / "mpv" / utils::u8ToPath(filename);
+        if (paths::isValidBinary(progFiles, 1024 * 1024)) {
+            return utils::pathToUtf8(progFiles);
+        }
+    } else {
+        std::filesystem::path progFiles = std::filesystem::path(L"C:\\Program Files\\mpv") / utils::u8ToPath(filename);
+        if (paths::isValidBinary(progFiles, 1024 * 1024)) {
+            return utils::pathToUtf8(progFiles);
         }
     }
 
-    std::string progFiles = "C:\\Program Files\\mpv\\" + filenameStr;
-    if (isValidBinaryWin(progFiles))
-        return progFiles;
-    std::string progFilesX86 = "C:\\Program Files (x86)\\mpv\\" + filenameStr;
-    if (isValidBinaryWin(progFilesX86))
-        return progFilesX86;
-    if (localAppData != nullptr && localAppData[0] != '\0') {
-        std::string progUser = std::string(localAppData) + "\\Programs\\mpv\\" + filenameStr;
-        if (isValidBinaryWin(progUser))
-            return progUser;
+    const wchar_t *wProgFilesX86 = _wgetenv(L"ProgramFiles(x86)");
+    if (wProgFilesX86 != nullptr && wProgFilesX86[0] != L'\0') {
+        std::filesystem::path progFilesX86 = std::filesystem::path(wProgFilesX86) / "mpv" / utils::u8ToPath(filename);
+        if (paths::isValidBinary(progFilesX86, 1024 * 1024)) {
+            return utils::pathToUtf8(progFilesX86);
+        }
+    } else {
+        std::filesystem::path progFilesX86 = std::filesystem::path(L"C:\\Program Files (x86)\\mpv") / utils::u8ToPath(filename);
+        if (paths::isValidBinary(progFilesX86, 1024 * 1024)) {
+            return utils::pathToUtf8(progFilesX86);
+        }
     }
+
+    const wchar_t *wLocalApp = _wgetenv(L"LOCALAPPDATA");
+    if (wLocalApp != nullptr && wLocalApp[0] != L'\0') {
+        std::filesystem::path progUser = std::filesystem::path(wLocalApp) / "Programs" / "mpv" / utils::u8ToPath(filename);
+        if (paths::isValidBinary(progUser, 1024 * 1024)) {
+            return utils::pathToUtf8(progUser);
+        }
+    }
+
     return {};
 }
 #endif
@@ -88,20 +95,33 @@ bool MpvApi::load() {
         return true;
 
 #ifdef _WIN32
+    // 1. Check local/SearchPath/WinGet/ProgramFiles candidate paths
     std::string foundMpvDll = findFileInPaths("mpv-2.dll");
     if (foundMpvDll.empty())
         foundMpvDll = findFileInPaths("libmpv-2.dll");
     if (foundMpvDll.empty())
         foundMpvDll = findFileInPaths("mpv-1.dll");
 
-    if (!foundMpvDll.empty()) {
-        lib.load(foundMpvDll);
+    // 2. Fall back to dedicated WinGet package binary search for libmpv-2.dll
+    if (foundMpvDll.empty()) {
+        auto wingetDll = paths::findWinGetPackageBinary("shinchiro.mpv", "libmpv-2.dll", 1024 * 1024);
+        if (!wingetDll.empty()) {
+            foundMpvDll = utils::pathToUtf8(wingetDll);
+        }
     }
 
+    if (!foundMpvDll.empty()) {
+        if (lib.load(foundMpvDll)) {
+            LOG_INFO("[MpvApi] Loaded libmpv from candidate path: {}", foundMpvDll);
+        }
+    }
+
+    // 3. Fall back to system dynamic library loader search paths by candidate name
     if (!lib.isLoaded()) {
         constexpr std::array<const char *, 4> candidates = {"mpv-2.dll", "libmpv-2.dll", "mpv-1.dll", "libmpv.dll"};
         for (const char *cand : candidates) {
             if (lib.load(cand)) {
+                LOG_INFO("[MpvApi] Loaded libmpv by candidate name: {}", cand);
                 break;
             }
         }
@@ -111,7 +131,8 @@ bool MpvApi::load() {
     // 1. Check bundled lib/ directory candidates first
     for (const char *cand : candidates) {
         auto p = paths::findCandidateFile(cand);
-        if (!p.empty() && lib.load(p.string())) {
+        if (!p.empty() && lib.load(utils::pathToUtf8(p))) {
+            LOG_INFO("[MpvApi] Loaded bundled libmpv from {}", utils::pathToUtf8(p));
             break;
         }
     }
@@ -120,14 +141,17 @@ bool MpvApi::load() {
     if (!lib.isLoaded()) {
         for (const char *cand : candidates) {
             if (lib.load(cand)) {
+                LOG_INFO("[MpvApi] Loaded system libmpv: {}", cand);
                 break;
             }
         }
     }
 #endif
 
-    if (!lib.isLoaded())
+    if (!lib.isLoaded()) {
+        LOG_WARN("[MpvApi] Failed to locate or load libmpv from lib/ or system PATH.");
         return false;
+    }
 
     create = lib.getSymbol<mpv_handle *(*)()>("mpv_create");
     initialize = lib.getSymbol<int (*)(mpv_handle *)>("mpv_initialize");

@@ -2,6 +2,7 @@
 
 #include "utils/AppPaths.h"
 #include "utils/Logger.h"
+#include "utils/StringUtils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -21,12 +22,12 @@ ThumbnailCache &ThumbnailCache::instance() {
 ThumbnailCache::ThumbnailCache() {
     m_cacheDir = lightyt::paths::getThumbnailCacheDir();
     lightyt::paths::ensureDirExists(m_cacheDir);
-    LOG_INFO("[ThumbnailCache] Initialized with disk directory: {}", m_cacheDir.string());
+    LOG_INFO("[ThumbnailCache] Initialized with disk directory: {}", lightyt::utils::pathToUtf8(m_cacheDir));
 }
 
 ThumbnailCache::~ThumbnailCache() {
     m_shuttingDown.store(true);
-    while (m_isPruning.load()) {
+    while (m_isPruning.load(std::memory_order_acquire)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -110,14 +111,10 @@ bool ThumbnailCache::writeDisk(std::string_view url, const std::vector<uint8_t> 
     if (!ec) {
         if (m_writesSincePrune.fetch_add(1) >= 50) {
             m_writesSincePrune.store(0);
-            if (!m_shuttingDown.load()) {
-                bool expected = false;
-                if (m_isPruning.compare_exchange_strong(expected, true)) {
-                    std::thread([this]() {
-                        prune();
-                        m_isPruning.store(false);
-                    }).detach();
-                }
+            if (!m_shuttingDown.load() && !m_isPruning.load(std::memory_order_relaxed)) {
+                std::thread([this]() {
+                    prune();
+                }).detach();
             }
         }
         return true;
@@ -132,6 +129,15 @@ bool ThumbnailCache::removeDisk(std::string_view url) {
 }
 
 void ThumbnailCache::prune(size_t maxBytes, int maxAgeDays) {
+    bool expected = false;
+    if (!m_isPruning.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return;
+    }
+    struct PruneGuard {
+        std::atomic<bool> &flag;
+        ~PruneGuard() { flag.store(false, std::memory_order_release); }
+    } guard{.flag = m_isPruning};
+
     std::error_code ec;
     if (!fs::exists(m_cacheDir, ec)) {
         return;
@@ -155,7 +161,11 @@ void ThumbnailCache::prune(size_t maxBytes, int maxAgeDays) {
         if (entry.is_regular_file(ec)) {
             const auto &path = entry.path();
             if (path.extension() == ".tmp") {
-                fs::remove(path, ec);
+                std::error_code fileEc;
+                auto wt = entry.last_write_time(fileEc);
+                if (!fileEc && (now > wt) && (now - wt > std::chrono::minutes(15))) {
+                    fs::remove(path, fileEc);
+                }
                 continue;
             }
             if (path.extension() == ".jpg") {

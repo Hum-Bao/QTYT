@@ -58,6 +58,7 @@ private:
     HANDLE m_hProcess = nullptr;
     HANDLE m_hPipe = nullptr;
     HANDLE m_hStopEvent = nullptr;
+    HANDLE m_writeEvent = nullptr;
     std::mutex m_writeMutex;
 #else
     int m_sock = -1;

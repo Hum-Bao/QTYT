@@ -87,20 +87,6 @@ double PlayerScrubber::secondsFromX(int x) const noexcept {
     return ratio * m_duration;
 }
 
-QString PlayerScrubber::formatTime(double seconds) {
-    if (seconds < 0.0)
-        seconds = 0.0;
-    int totalSec = static_cast<int>(seconds);
-    int sec = totalSec % 60;
-    int min = (totalSec / 60) % 60;
-    int hr = totalSec / 3600;
-
-    if (hr > 0) {
-        return QString::asprintf("%d:%02d:%02d", hr, min, sec);
-    }
-    return QString::asprintf("%d:%02d", min, sec);
-}
-
 void PlayerScrubber::paintEvent(QPaintEvent *) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -154,7 +140,7 @@ void PlayerScrubber::paintEvent(QPaintEvent *) {
     // 6. Floating Time Preview Badge / Tooltip
     // Positioned strictly within the widget bounds (badgeY >= 2) so text and background are never clipped
     if (active && m_duration > 0.0) {
-        QString timeStr = formatTime(m_hoverPosition);
+        QString timeStr = PlayerControlsOverlay::formatTime(m_hoverPosition);
         QFont font = p.font();
         font.setPointSize(10);
         font.setBold(true);
@@ -1103,7 +1089,7 @@ void PlayerControlsOverlay::updateTimeLabel() {
 }
 
 QString PlayerControlsOverlay::formatTime(double seconds) {
-    if (seconds < 0.0)
+    if (!std::isfinite(seconds) || seconds < 0.0)
         seconds = 0.0;
     int totalSec = static_cast<int>(seconds);
     int sec = totalSec % 60;

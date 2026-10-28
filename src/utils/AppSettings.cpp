@@ -15,6 +15,42 @@ QString pathToQString(const std::filesystem::path &p) {
     return QString::fromUtf8(p.string().c_str());
 #endif
 }
+
+bool isKnownSettingKey(const QString &key) {
+    // 1. Audio volume
+    if (key == "volume" || key == "player/volume") return true;
+    // 2. Playback quality
+    if (key == "quality" || key == "player/quality") return true;
+    // 3. Hide Shorts in feed
+    if (key == "hideShorts" || key == "hide_shorts" || 
+        key == "feed/hide_shorts" || key == "feed/hideShorts") return true;
+    // 4. Allow AV1 video streams
+    if (key == "allowAv1" || key == "allow_av1" || 
+        key == "playback/allow_av1" || key == "playback/allowAv1") return true;
+    // 5. Autoplay next video
+    if (key == "autoplay" || key == "player/autoplay") return true;
+    // 6. Theater mode
+    if (key == "theaterMode" || key == "theater_mode" || 
+        key == "player/theater_mode" || key == "player/theaterMode") return true;
+    // 7. Window geometry
+    if (key == "geometry" || key == "window/geometry") return true;
+    // 8. Window state
+    if (key == "windowState" || key == "window_state" || 
+        key == "window/state" || key == "window/windowState") return true;
+    // 9. Selected Channel Page ID
+    if (key == "selectedChannelPageId" || key == "account/channel_page_id" || 
+        key == "account/channelPageId" || key == "channelPageId") return true;
+    // 10. Selected Auth User Index
+    if (key == "selectedAuthUserIndex" || key == "account/auth_user_index" || 
+        key == "account/authUserIndex" || key == "authUserIndex") return true;
+    // 11. Selected Channel Name
+    if (key == "selectedChannelName" || key == "account/channel_name" || 
+        key == "account/channelName" || key == "channelName") return true;
+    // 12. Log level
+    if (key == "logLevel" || key == "log_level" || key == "app/log_level") return true;
+
+    return false;
+}
 }  // namespace
 
 AppSettings &AppSettings::instance() {
@@ -36,6 +72,18 @@ void AppSettings::loadFromDisk() {
 
     QSettings settings(pathToQString(settingsPath), QSettings::IniFormat);
     QSettings legacySettings("LightYT", "LightYT");
+
+    if (iniExists) {
+        const auto keys = settings.allKeys();
+        for (const auto &k : keys) {
+            m_cachedDiskKeys.insert(k);
+        }
+    } else {
+        const auto keys = legacySettings.allKeys();
+        for (const auto &k : keys) {
+            m_cachedDiskKeys.insert(k);
+        }
+    }
 
     auto readValue = [&](const QString &key, const QVariant &defaultVal) -> QVariant {
         if (settings.contains(key)) {
@@ -90,12 +138,36 @@ void AppSettings::saveToDiskLocked() {
     settings.setValue("selectedChannelName", m_selectedChannelName);
     settings.setValue("logLevel", m_logLevel);
     settings.sync();
+
+    m_cachedDiskKeys.insert("geometry");
+    m_cachedDiskKeys.insert("windowState");
+    m_cachedDiskKeys.insert("volume");
+    m_cachedDiskKeys.insert("quality");
+    m_cachedDiskKeys.insert("hideShorts");
+    m_cachedDiskKeys.insert("allowAv1");
+    m_cachedDiskKeys.insert("autoplay");
+    m_cachedDiskKeys.insert("theaterMode");
+    m_cachedDiskKeys.insert("selectedChannelPageId");
+    m_cachedDiskKeys.insert("selectedAuthUserIndex");
+    m_cachedDiskKeys.insert("selectedChannelName");
+    m_cachedDiskKeys.insert("logLevel");
+
     m_dirty = false;
 }
 
 void AppSettings::sync() {
     std::lock_guard lock(m_mutex);
     saveToDiskLocked();
+}
+
+bool AppSettings::containsKey(const QString &key) const {
+    std::lock_guard lock(m_mutex);
+    return isKnownSettingKey(key) || m_cachedDiskKeys.contains(key);
+}
+
+bool AppSettings::hasPersistedKey(const QString &key) const {
+    std::lock_guard lock(m_mutex);
+    return m_cachedDiskKeys.contains(key);
 }
 
 QByteArray AppSettings::getGeometry() const {

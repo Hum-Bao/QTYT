@@ -40,6 +40,9 @@ public:
     explicit ThumbnailLoader(QObject *parent = nullptr);
     ~ThumbnailLoader() override;
 
+    static ThumbnailLoader &instance();
+    void shutdown();
+
     // Decode image from raw bytes with format sniffing (WebP, JPEG, PNG fallback)
     [[nodiscard]] static QImage decodeImageFromBytes(const uint8_t *data, size_t size);
     [[nodiscard]] static QImage decodeImageFromBytes(const std::vector<uint8_t> &bytes);
@@ -48,8 +51,8 @@ public:
     // Request thumbnail download/decode (emits thumbnailLoaded when ready)
     void requestThumbnail(const std::string &url);
 
-    // Request channel avatar download/decode (emits avatarLoaded when ready)
-    void requestAvatar(const std::string &url, int size = 36);
+    // Request channel avatar download/decode (returns cached pixmap if ready, emits avatarReady when fetched)
+    QPixmap requestAvatar(const std::string &url, int size = 36);
 
     // Cancel queued downloads when switching feeds
     void cancelPending();
@@ -67,11 +70,12 @@ public:
     void onTaskFailed(const std::string &url);
 
     void onAvatarTaskSucceeded(const std::string &url, int size, const QPixmap &pixmap);
-    void onAvatarTaskFailed(const std::string &url);
+    void onAvatarTaskFailed(const std::string &url, int size);
 
 signals:
     void thumbnailLoaded(const std::string &url, const QPixmap &pixmap);
     void avatarLoaded(const std::string &url, const QPixmap &pixmap);
+    void avatarReady(const std::string &url, int size, const QPixmap &pixmap);
 
 private:
     QThreadPool m_threadPool;

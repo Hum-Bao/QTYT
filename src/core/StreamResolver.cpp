@@ -81,18 +81,22 @@ public:
     }
 
     void shutdown() {
+        std::vector<std::thread> workersToJoin;
         {
             std::lock_guard lock(m_mutex);
+            if (m_stop && m_workers.empty()) {
+                return;
+            }
             m_stop = true;
             m_tasks.clear();
+            workersToJoin = std::move(m_workers);
         }
         m_cv.notify_all();
-        for (auto &w : m_workers) {
+        for (auto &w : workersToJoin) {
             if (w.joinable()) {
                 w.join();
             }
         }
-        m_workers.clear();
     }
 
 private:
@@ -144,16 +148,7 @@ PrefetchQueue &getPrefetchQueue() {
 }
 
 bool fileExists(const std::filesystem::path &p) {
-    std::error_code ec;
-#ifdef _WIN32
-    if (!std::filesystem::is_regular_file(p, ec)) {
-        return false;
-    }
-    auto sz = std::filesystem::file_size(p, ec);
-    return !ec && sz >= 1048576;  // Reject WinGet Link shims under 1MB
-#else
-    return std::filesystem::is_regular_file(p, ec);
-#endif
+    return lightyt::paths::isValidBinary(p, 1024 * 1024);
 }
 
 bool copyFileSecure(const std::filesystem::path &src, const std::filesystem::path &dst) {
@@ -255,9 +250,13 @@ void StreamResolver::pruneExpired() {
     std::erase_if(g_streamCache, [now](const auto &item) { return now >= item.second.expiresAt; });
 }
 
+void StreamResolver::shutdownPrefetch() {
+    getPrefetchQueue().shutdown();
+}
+
 void StreamResolver::shutdown() {
     g_shutdownRequested.store(true);
-    getPrefetchQueue().shutdown();
+    shutdownPrefetch();
 
     std::lock_guard lock(g_inFlightMutex);
     for (auto &[k, flight] : g_inFlight) {
@@ -285,7 +284,7 @@ std::string StreamResolver::findYtDlp() {
     for (const char *name : {"yt-dlp.exe", "yt-dlp"}) {
         for (const auto &cand : lightyt::paths::getLocalCandidatePaths(name)) {
             if (fileExists(cand)) {
-                found = cand.string();
+                found = lightyt::utils::pathToUtf8(cand);
                 break;
             }
         }
@@ -294,39 +293,24 @@ std::string StreamResolver::findYtDlp() {
     }
 
     if (found.empty()) {
-        const char *localApp = std::getenv("LOCALAPPDATA");
-        if (localApp != nullptr && localApp[0] != '\0') {
-            std::error_code ec;
-            std::filesystem::path pkgDir = std::filesystem::path(localApp) / "Microsoft" / "WinGet" / "Packages";
-            if (std::filesystem::is_directory(pkgDir, ec)) {
-                for (const auto &entry : std::filesystem::recursive_directory_iterator(
-                         pkgDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-                    if (ec)
-                        break;
-                    if (entry.is_regular_file(ec) && entry.path().filename() == "yt-dlp.exe") {
-                        if (fileExists(entry.path())) {
-                            found = entry.path().string();
-                            break;
-                        }
-                    }
-                }
-            }
+        auto wingetBinary = lightyt::paths::findWinGetPackageBinary("yt-dlp", "yt-dlp.exe", 1024 * 1024);
+        if (!wingetBinary.empty()) {
+            found = lightyt::utils::pathToUtf8(wingetBinary);
         }
-        if (found.empty()) {
-            std::array<char, MAX_PATH> searchBuf{};
-            if (SearchPathA(nullptr, "yt-dlp.exe", nullptr, static_cast<DWORD>(searchBuf.size()), searchBuf.data(),
-                            nullptr) > 0) {
-                if (fileExists(searchBuf.data())) {
-                    found = searchBuf.data();
-                }
-            }
+    }
+
+    if (found.empty()) {
+        wchar_t buf[MAX_PATH];
+        DWORD len = SearchPathW(nullptr, L"yt-dlp.exe", nullptr, MAX_PATH, buf, nullptr);
+        if (len > 0 && len < MAX_PATH && fileExists(buf)) {
+            found = lightyt::utils::pathToUtf8(std::filesystem::path(buf));
         }
     }
 #else
     for (const char *name : {"yt-dlp", "yt-dlp.exe"}) {
         for (const auto &cand : lightyt::paths::getLocalCandidatePaths(name)) {
             if (fileExists(cand) && access(cand.c_str(), X_OK) == 0) {
-                found = cand.string();
+                found = lightyt::utils::pathToUtf8(cand);
                 break;
             }
         }
@@ -348,7 +332,7 @@ std::string StreamResolver::findYtDlp() {
                     if (!dir.empty()) {
                         std::filesystem::path cand = std::filesystem::path(dir) / "yt-dlp";
                         if (access(cand.c_str(), X_OK) == 0) {
-                            found = cand.string();
+                            found = lightyt::utils::pathToUtf8(cand);
                             break;
                         }
                     }
@@ -379,62 +363,40 @@ std::vector<std::string> findAllJsRuntimes() {
 
     std::vector<std::string> foundList;
     auto addUnique = [&](std::string_view stem, const std::filesystem::path &p) {
-        std::string entry = std::string(stem) + ":" + p.string();
+        std::string entry = std::string(stem) + ":" + lightyt::utils::pathToUtf8(p);
         if (std::ranges::find(foundList, entry) == foundList.end()) {
             foundList.push_back(std::move(entry));
         }
     };
 
 #ifdef _WIN32
-    auto exeDir = lightyt::paths::getExecutableDir();
-    constexpr std::array<std::pair<const char *, const char *>, 3> kRuntimes = {
-        {{"deno", "deno.exe"}, {"node", "node.exe"}, {"bun", "bun.exe"}}};
+    constexpr std::array<std::pair<const char *, const wchar_t *>, 3> kRuntimes = {
+        {{"deno", L"deno.exe"}, {"node", L"node.exe"}, {"bun", L"bun.exe"}}};
 
-    const char *pathEnv = std::getenv("PATH");
-    const char *userProfile = std::getenv("USERPROFILE");
-    const char *localApp = std::getenv("LOCALAPPDATA");
-    const char *nvmSymlink = std::getenv("NVM_SYMLINK");
+    const wchar_t *wPathEnv = _wgetenv(L"PATH");
+    const wchar_t *wUserProfile = _wgetenv(L"USERPROFILE");
+    const wchar_t *wLocalApp = _wgetenv(L"LOCALAPPDATA");
+    const wchar_t *wNvmSymlink = _wgetenv(L"NVM_SYMLINK");
 
-    // Pre-scan WinGet Packages once for deno.exe, node.exe, bun.exe so Deno in WinGet
-    // is never masked by an older system Node.js when WinGet Links has a <1MB shim.
-    std::unordered_map<std::string, std::filesystem::path> wingetBins;
-    if (localApp != nullptr && localApp[0] != '\0') {
-        std::error_code ec;
-        std::filesystem::path pkgDir = std::filesystem::path(localApp) / "Microsoft" / "WinGet" / "Packages";
-        if (std::filesystem::is_directory(pkgDir, ec)) {
-            for (const auto &entry : std::filesystem::recursive_directory_iterator(
-                     pkgDir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-                if (ec)
-                    break;
-                if (entry.is_regular_file(ec)) {
-                    auto fn = entry.path().filename().string();
-                    if ((fn == "deno.exe" || fn == "node.exe" || fn == "bun.exe") && fileExists(entry.path())) {
-                        wingetBins.try_emplace(fn, entry.path());
-                    }
-                }
-            }
-        }
-    }
-
-    // Search each runtime across all locations in strict priority order: deno -> node -> bun
     for (const auto &[stem, binName] : kRuntimes) {
-        for (const auto &cand : lightyt::paths::getLocalCandidatePaths(binName)) {
+        std::string narrowBinName = lightyt::utils::pathToUtf8(binName);
+        for (const auto &cand : lightyt::paths::getLocalCandidatePaths(narrowBinName)) {
             if (fileExists(cand)) {
                 addUnique(stem, cand);
                 break;
             }
         }
-        std::array<char, MAX_PATH> searchBuf{};
-        if (SearchPathA(nullptr, binName, nullptr, static_cast<DWORD>(searchBuf.size()), searchBuf.data(), nullptr) >
-            0) {
-            if (fileExists(searchBuf.data())) {
-                addUnique(stem, searchBuf.data());
-            }
+
+        wchar_t searchBuf[MAX_PATH];
+        DWORD sLen = SearchPathW(nullptr, binName, nullptr, MAX_PATH, searchBuf, nullptr);
+        if (sLen > 0 && sLen < MAX_PATH && fileExists(searchBuf)) {
+            addUnique(stem, searchBuf);
         }
-        if (pathEnv && pathEnv[0] != '\0') {
-            std::stringstream ss(pathEnv);
-            std::string dir;
-            while (std::getline(ss, dir, ';')) {
+
+        if (wPathEnv && wPathEnv[0] != L'\0') {
+            std::wstringstream ss(wPathEnv);
+            std::wstring dir;
+            while (std::getline(ss, dir, L';')) {
                 if (dir.empty())
                     continue;
                 std::filesystem::path cand = std::filesystem::path(dir) / binName;
@@ -444,17 +406,18 @@ std::vector<std::string> findAllJsRuntimes() {
                 }
             }
         }
+
         if (std::string_view(stem) == "deno") {
-            if (userProfile && userProfile[0] != '\0') {
-                std::filesystem::path up(userProfile);
+            if (wUserProfile && wUserProfile[0] != L'\0') {
+                std::filesystem::path up(wUserProfile);
                 if (fileExists(up / ".deno" / "bin" / "deno.exe"))
                     addUnique("deno", up / ".deno" / "bin" / "deno.exe");
                 if (fileExists(up / "scoop" / "apps" / "deno" / "current" / "deno.exe"))
                     addUnique("deno", up / "scoop" / "apps" / "deno" / "current" / "deno.exe");
             }
         } else if (std::string_view(stem) == "node") {
-            if (nvmSymlink && nvmSymlink[0] != '\0') {
-                std::filesystem::path nvmPath = std::filesystem::path(nvmSymlink) / "node.exe";
+            if (wNvmSymlink && wNvmSymlink[0] != L'\0') {
+                std::filesystem::path nvmPath = std::filesystem::path(wNvmSymlink) / "node.exe";
                 if (fileExists(nvmPath))
                     addUnique("node", nvmPath);
             }
@@ -462,26 +425,28 @@ std::vector<std::string> findAllJsRuntimes() {
                 addUnique("node", "C:/Program Files/nodejs/node.exe");
             if (fileExists("C:/Program Files (x86)/nodejs/node.exe"))
                 addUnique("node", "C:/Program Files (x86)/nodejs/node.exe");
-            if (localApp && localApp[0] != '\0') {
-                std::filesystem::path laNode = std::filesystem::path(localApp) / "Programs" / "nodejs" / "node.exe";
+            if (wLocalApp && wLocalApp[0] != L'\0') {
+                std::filesystem::path laNode = std::filesystem::path(wLocalApp) / "Programs" / "nodejs" / "node.exe";
                 if (fileExists(laNode))
                     addUnique("node", laNode);
             }
-            if (userProfile && userProfile[0] != '\0') {
+            if (wUserProfile && wUserProfile[0] != L'\0') {
                 std::filesystem::path scoopNode =
-                    std::filesystem::path(userProfile) / "scoop" / "apps" / "nodejs" / "current" / "node.exe";
+                    std::filesystem::path(wUserProfile) / "scoop" / "apps" / "nodejs" / "current" / "node.exe";
                 if (fileExists(scoopNode))
                     addUnique("node", scoopNode);
             }
         } else if (std::string_view(stem) == "bun") {
-            if (userProfile && userProfile[0] != '\0') {
-                std::filesystem::path upBun = std::filesystem::path(userProfile) / ".bun" / "bin" / "bun.exe";
+            if (wUserProfile && wUserProfile[0] != L'\0') {
+                std::filesystem::path upBun = std::filesystem::path(wUserProfile) / ".bun" / "bin" / "bun.exe";
                 if (fileExists(upBun))
                     addUnique("bun", upBun);
             }
         }
-        if (auto it = wingetBins.find(binName); it != wingetBins.end()) {
-            addUnique(stem, it->second);
+
+        auto wgBin = lightyt::paths::findWinGetPackageBinary(stem, narrowBinName, 1024 * 1024);
+        if (!wgBin.empty()) {
+            addUnique(stem, wgBin);
         }
     }
 #else
@@ -546,13 +511,16 @@ std::vector<std::string> findAllJsRuntimes() {
                 if (colonPos != std::string::npos) {
                     std::string binPath = foundList.front().substr(colonPos + 1);
                     std::error_code ec;
-                    std::filesystem::path binDir = std::filesystem::path(binPath).parent_path();
+                    std::filesystem::path binDir = lightyt::utils::u8ToPath(binPath).parent_path();
                     if (!binDir.empty() && std::filesystem::is_directory(binDir, ec)) {
-                        const char *currPath = std::getenv("PATH");
-                        std::string newPath = binDir.string() + (currPath ? (":" + std::string(currPath)) : "");
 #ifdef _WIN32
-                        _putenv_s("PATH", newPath.c_str());
+                        const wchar_t *currPath = _wgetenv(L"PATH");
+                        std::wstring newPath = binDir.wstring() + (currPath ? (L";" + std::wstring(currPath)) : L"");
+                        _wputenv_s(L"PATH", newPath.c_str());
+                        SetEnvironmentVariableW(L"PATH", newPath.c_str());
 #else
+                        const char *currPath = std::getenv("PATH");
+                        std::string newPath = lightyt::utils::pathToUtf8(binDir) + (currPath ? (":" + std::string(currPath)) : "");
                         setenv("PATH", newPath.c_str(), 1);
 #endif
                     }
@@ -638,7 +606,7 @@ std::string StreamResolver::findPotProvider() {
                 if (access(cand.c_str(), X_OK) == 0)
 #endif
                 {
-                    found = cand.string();
+                    found = lightyt::utils::pathToUtf8(cand);
                     break;
                 }
             }
@@ -647,6 +615,16 @@ std::string StreamResolver::findPotProvider() {
             break;
         }
     }
+
+#ifdef _WIN32
+    if (found.empty()) {
+        wchar_t buf[MAX_PATH];
+        DWORD len = SearchPathW(nullptr, L"bgutil-pot.exe", nullptr, MAX_PATH, buf, nullptr);
+        if (len > 0 && len < MAX_PATH && fileExists(buf)) {
+            found = lightyt::utils::pathToUtf8(std::filesystem::path(buf));
+        }
+    }
+#endif
 
     if (found.empty()) {
         const char *pathEnv = std::getenv("PATH");
@@ -671,7 +649,7 @@ std::string StreamResolver::findPotProvider() {
                     if (fileExists(cand))
 #endif
                     {
-                        found = cand.string();
+                        found = lightyt::utils::pathToUtf8(cand);
                         break;
                     }
                 }
@@ -684,6 +662,20 @@ std::string StreamResolver::findPotProvider() {
 
     if (!found.empty()) {
         std::lock_guard lock(s_mutex);
+        std::error_code ec;
+        std::filesystem::path binDir = lightyt::utils::u8ToPath(found).parent_path();
+        if (!binDir.empty() && std::filesystem::is_directory(binDir, ec)) {
+#ifdef _WIN32
+            const wchar_t *currPath = _wgetenv(L"PATH");
+            std::wstring newPath = binDir.wstring() + (currPath ? (L";" + std::wstring(currPath)) : L"");
+            _wputenv_s(L"PATH", newPath.c_str());
+            SetEnvironmentVariableW(L"PATH", newPath.c_str());
+#else
+            const char *currPath = std::getenv("PATH");
+            std::string newPath = lightyt::utils::pathToUtf8(binDir) + (currPath ? (":" + std::string(currPath)) : "");
+            setenv("PATH", newPath.c_str(), 1);
+#endif
+        }
         s_cachedPot = found;
         LOG_INFO("[StreamResolver] Found POT provider: {}", found);
     }
@@ -718,6 +710,7 @@ std::vector<std::string> StreamResolver::buildYtDlpArgs(const std::string &ytdlp
     }
 
     auto jsRuntimes = findAllJsRuntimes();
+    (void)findPotProvider();
     for (const auto &rt : jsRuntimes) {
         args.emplace_back("--js-runtimes");
         args.emplace_back(rt);
@@ -895,8 +888,9 @@ bool StreamResolver::resolve(std::string_view videoIdOrUrl, std::string_view qua
     std::string effectiveCookiePath;
     if (!cookieFilePath.empty()) {
         std::error_code ec;
-        if (std::filesystem::is_regular_file(cookieFilePath, ec)) {
-            std::filesystem::path parentDir = std::filesystem::path(cookieFilePath).parent_path();
+        std::filesystem::path origCookiePath = lightyt::utils::u8ToPath(cookieFilePath);
+        if (std::filesystem::is_regular_file(origCookiePath, ec)) {
+            std::filesystem::path parentDir = origCookiePath.parent_path();
             if (parentDir.empty() || !std::filesystem::exists(parentDir, ec)) {
                 parentDir = lightyt::paths::getAppDataDir();
             }
@@ -908,8 +902,8 @@ bool StreamResolver::resolve(std::string_view videoIdOrUrl, std::string_view qua
             tempCookiePath = parentDir / std::format("lightyt_ytdlp_cookies_{}_{}.txt",
                                                      std::chrono::steady_clock::now().time_since_epoch().count(), id);
 
-            if (copyFileSecure(cookieFilePath, tempCookiePath)) {
-                effectiveCookiePath = tempCookiePath.string();
+            if (copyFileSecure(origCookiePath, tempCookiePath)) {
+                effectiveCookiePath = lightyt::utils::pathToUtf8(tempCookiePath);
             } else {
                 std::filesystem::remove(tempCookiePath, ec);
                 tempCookiePath.clear();

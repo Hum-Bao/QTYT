@@ -58,18 +58,24 @@ YouTube enforces strict server-side bandwidth rate-limiting (~10–15 KB/s or ~1
 
 QTYT handles this adaptively:
 1. **Unthrottled AV1 / VP9 via POT Plugin**:
-   * QTYT integrates the native [`bgutil-pot`](https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs) token generator alongside the [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) plugin in `lib/yt-dlp-plugins/`.
+   * QTYT integrates the native [`bgutil-pot`](https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs) token generator alongside the [`bgutil-ytdlp-pot-provider`](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) plugin.
    * When a JavaScript runtime (`node`, `deno`, or `bun`) is detected on the host system (such as system PATH or NVM installations), QTYT automatically supplies it to `yt-dlp` via `--js-runtimes`.
    * `yt-dlp` solves `n-sig` challenges off-thread and attaches PO tokens to video stream requests, unlocking full line speeds of **120–280+ Mbps** on high-resolution **AV1** (`itag 399`) and **VP9** (`itag 303`) streams.
 2. **Zero-Dependency Fallback to H.264**:
    * If no JavaScript runtime or POT provider is installed on your machine, QTYT automatically and safely defaults to unthrottled **H.264 (AVC)** streams via Apple VisionOS (`FAST_DEFAULT_ARGS`).
    * This guarantees instantaneous buffering and consistent **~70,000 Kbps** line speed with 0% CPU decoding overhead without requiring any external runtimes or plugins.
 
-#### Installing `bgutil-pot` (PO Token Provider) on Windows
+#### Installing `yt-dlp` and `bgutil-pot` (PO Token Provider) on Windows
 
-To unlock unthrottled **AV1** / **VP9** playback (up to 280+ Mbps) and prevent YouTube's ~122 Kbps rate-limiting on Windows:
+To unlock unthrottled **AV1** / **VP9** playback (up to 280+ Mbps) on Windows:
 
-1. **Download `bgutil-pot.exe` into `lib\`** (run from project root in PowerShell):
+1. **Install `yt-dlp` and the `bgutil-ytdlp-pot-provider` plugin via `pip`**:
+   ```powershell
+   pip install -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
+   ```
+   *(Because both are installed via `pip` into the same Python environment, `yt-dlp` automatically discovers `bgutil-ytdlp-pot-provider` with zero extra configuration. Note: remove `lib\yt-dlp.exe` if you want QTYT to use your `pip`-installed `yt-dlp` from `PATH`, or run `pip install --no-deps --target "lib\yt-dlp-plugins\bgutil-ytdlp-pot-provider" bgutil-ytdlp-pot-provider` if using standalone `lib\yt-dlp.exe`.)*
+
+2. **Download `bgutil-pot.exe` into `lib\`** (run from project root in PowerShell):
    ```powershell
    Invoke-WebRequest -Uri "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-windows-x86_64.exe" -OutFile "lib\bgutil-pot.exe"
    ```
@@ -78,7 +84,7 @@ To unlock unthrottled **AV1** / **VP9** playback (up to 280+ Mbps) and prevent Y
    curl.exe -L "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-windows-x86_64.exe" -o "lib\bgutil-pot.exe"
    ```
 
-2. **Ensure a JavaScript Runtime is installed** (for `yt-dlp` n-sig challenge solving):
+3. **Ensure a JavaScript Runtime is installed** (for `yt-dlp` n-sig challenge solving):
    ```powershell
    winget install OpenJS.NodeJS.LTS
    # or
@@ -87,9 +93,9 @@ To unlock unthrottled **AV1** / **VP9** playback (up to 280+ Mbps) and prevent Y
 
 ### Dependency Resolution Order
 
-QTYT automatically locates `yt-dlp`, POT plugins, and `mpv` in this order:
+QTYT automatically locates `yt-dlp`, `bgutil-pot`, and `mpv` in this order:
 1. **Local `lib/` directory**: Place executables, plugins (`lib/yt-dlp-plugins/`), or shared libraries directly in the `lib/` folder next to the app for a fully self-contained, portable setup.
-2. **System `PATH`**: Standard system installations (e.g. installed via your package manager, WinGet, or Chocolatey).
+2. **System `PATH`**: Standard system installations (e.g. `yt-dlp` + `bgutil-ytdlp-pot-provider` installed via `pip`, or tools installed via your package manager, WinGet, or Chocolatey).
 
 ---
 
@@ -103,17 +109,20 @@ Install the required build tools, Qt 6 libraries, and media packages:
 * **Debian / Ubuntu**:
   ```bash
   sudo apt update
-  sudo apt install build-essential cmake qt6-base-dev libcurl4-openssl-dev libmpv-dev yt-dlp
+  sudo apt install build-essential cmake qt6-base-dev libcurl4-openssl-dev libmpv-dev python3-pip
+  pip install -U --break-system-packages "yt-dlp[default]" bgutil-ytdlp-pot-provider
   ```
 
 * **Arch Linux**:
   ```bash
-  sudo pacman -S base-devel cmake qt6-base libmpv yt-dlp curl
+  sudo pacman -S base-devel cmake qt6-base libmpv curl python-pip
+  pip install -U --break-system-packages "yt-dlp[default]" bgutil-ytdlp-pot-provider
   ```
 
 * **Fedora**:
   ```bash
-  sudo dnf install gcc-c++ cmake qt6-qtbase-devel mpv-libs-devel libcurl-devel yt-dlp
+  sudo dnf install gcc-c++ cmake qt6-qtbase-devel mpv-libs-devel libcurl-devel python3-pip
+  pip install -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
   ```
 
 #### Building with the Automated Script (Recommended)
@@ -144,11 +153,15 @@ cmake --build build -j$(nproc)
 * **C++ Compiler**: MinGW GCC 13+ (bundled with Qt) or MSVC 2022.
 * **CMake**: 3.16 or higher.
 * **Qt 6**: Qt 6.8+ (Widgets, Core, Gui, Concurrent, OpenGLWidgets).
-* **Media Dependencies**: Place `yt-dlp.exe`, `bgutil-pot.exe` (for unthrottled AV1/VP9), and `libmpv-2.dll` (or `mpv.exe`) inside the `lib\` directory, or add them to your Windows `PATH`.
-  ```powershell
-  # Quick download for bgutil-pot.exe:
-  Invoke-WebRequest -Uri "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-windows-x86_64.exe" -OutFile "lib\bgutil-pot.exe"
-  ```
+* **Media Dependencies**:
+  1. Install `yt-dlp` and the POT provider plugin via `pip`:
+     ```powershell
+     pip install -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
+     ```
+  2. Place `bgutil-pot.exe` and `libmpv-2.dll` (or `mpv.exe`) inside the `lib\` directory (or add them to your Windows `PATH`):
+     ```powershell
+     Invoke-WebRequest -Uri "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest/download/bgutil-pot-windows-x86_64.exe" -OutFile "lib\bgutil-pot.exe"
+     ```
 
 #### Building with PowerShell (Recommended)
 The automated script auto-discovers your local Qt MinGW installation, compiles the binary, runs `windeployqt`, and starts the app:

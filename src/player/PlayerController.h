@@ -109,6 +109,9 @@ public:
         const char *demuxerReadaheadSecs = "60";
         const char *demuxerCacheWait = "no";
         const char *streamBufferSize = "2MiB";
+        const char *curlMaxRequestSize = "10485760";
+        const char *streamLavfOpts =
+            "request_size=10485760,multiple_requests=1,reconnect=1,reconnect_streamed=1,reconnect_delay_max=4";
     };
     [[nodiscard]] static constexpr StreamingBufferOptions getStreamingBufferOptions() noexcept {
         return StreamingBufferOptions{};

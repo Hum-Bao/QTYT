@@ -31,10 +31,20 @@
 
 namespace lightyt {
 
-IpcMpvBackend::IpcMpvBackend(PlayerController *controller) : m_controller(controller) {}
+IpcMpvBackend::IpcMpvBackend(PlayerController *controller) : m_controller(controller) {
+#ifdef _WIN32
+    m_writeEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+#endif
+}
 
 IpcMpvBackend::~IpcMpvBackend() {
     stopInternal();
+#ifdef _WIN32
+    if (m_writeEvent != nullptr) {
+        CloseHandle(m_writeEvent);
+        m_writeEvent = nullptr;
+    }
+#endif
 }
 
 bool IpcMpvBackend::isRunning() const {
@@ -81,6 +91,7 @@ bool IpcMpvBackend::start(int64_t windowId) {
                                      "--demuxer-cache-wait=" + std::string(bufOpts.demuxerCacheWait),
                                      "--force-seekable=yes",
                                      "--stream-buffer-size=" + std::string(bufOpts.streamBufferSize),
+                                     "--stream-lavf-o=" + std::string(bufOpts.streamLavfOpts),
                                      "--demuxer-donate-buffer=yes"};
 
     std::string cmd = lightyt::Process::buildCommandLine(args);
@@ -166,6 +177,7 @@ bool IpcMpvBackend::start(int64_t windowId) {
     std::string demuxerReadaheadSecsArg = std::string("--demuxer-readahead-secs=") + bufOpts.demuxerReadaheadSecs;
     std::string demuxerCacheWaitArg = std::string("--demuxer-cache-wait=") + bufOpts.demuxerCacheWait;
     std::string streamBufferSizeArg = std::string("--stream-buffer-size=") + bufOpts.streamBufferSize;
+    std::string streamLavfOptsArg = std::string("--stream-lavf-o=") + bufOpts.streamLavfOpts;
 
     auto exeDir = paths::getExecutableDir();
     std::string mpvBin = "mpv";
@@ -206,6 +218,7 @@ bool IpcMpvBackend::start(int64_t windowId) {
                                       demuxerCacheWaitArg.c_str(),
                                       "--force-seekable=yes",
                                       streamBufferSizeArg.c_str(),
+                                      streamLavfOptsArg.c_str(),
                                       "--demuxer-donate-buffer=yes"};
     argv.push_back(nullptr);
     char *const *rawArgv = const_cast<char *const *>(argv.data());
@@ -294,21 +307,13 @@ void IpcMpvBackend::loadFile(const std::string &url, const std::string &audioUrl
         setPropertyString("start", "none");
     }
 
-    nlohmann::json cmd;
-    if (!audioUrl.empty()) {
-        {
-            std::lock_guard lock(m_audioMutex);
-            m_pendingAudioUrl.clear();
-        }
-        std::string opt = "audio-file=%" + std::to_string(audioUrl.size()) + "%" + audioUrl;
-        cmd["command"] = nlohmann::json::array({"loadfile", url, "replace", -1, opt});
-    } else {
-        {
-            std::lock_guard lock(m_audioMutex);
-            m_pendingAudioUrl.clear();
-        }
-        cmd["command"] = nlohmann::json::array({"loadfile", url, "replace"});
+    {
+        std::lock_guard lock(m_audioMutex);
+        m_pendingAudioUrl = audioUrl;
     }
+
+    nlohmann::json cmd;
+    cmd["command"] = nlohmann::json::array({"loadfile", url, "replace"});
     sendJsonCommand(cmd.dump() + "\n");
 }
 
@@ -461,6 +466,7 @@ void IpcMpvBackend::stopInternal() {
 }
 
 void IpcMpvBackend::observeProperties() {
+    setPropertyString("curl-max-request-size", PlayerController::getStreamingBufferOptions().curlMaxRequestSize);
     sendJsonCommand("{\"command\": [\"observe_property\", 1, \"time-pos\"]}\n");
     sendJsonCommand("{\"command\": [\"observe_property\", 2, \"duration\"]}\n");
     sendJsonCommand("{\"command\": [\"observe_property\", 3, \"pause\"]}\n");
@@ -486,13 +492,15 @@ void IpcMpvBackend::sendJsonCommand(std::string_view cmd) {
 #ifdef _WIN32
     if (m_hPipe != nullptr && m_hPipe != INVALID_HANDLE_VALUE) {
         OVERLAPPED ovWrite{};
-        ovWrite.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (m_writeEvent != nullptr) {
+            ResetEvent(m_writeEvent);
+        }
+        ovWrite.hEvent = m_writeEvent;
         DWORD written = 0;
         BOOL ok = WriteFile(m_hPipe, cmd.data(), static_cast<DWORD>(cmd.size()), &written, &ovWrite);
         if (!ok && GetLastError() == ERROR_IO_PENDING) {
             GetOverlappedResult(m_hPipe, &ovWrite, &written, TRUE);
         }
-        CloseHandle(ovWrite.hEvent);
     }
 #else
     if (m_sock >= 0) {

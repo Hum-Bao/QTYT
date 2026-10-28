@@ -49,7 +49,6 @@ private slots:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
-    void keyPressEvent(QKeyEvent *event) override;
 
 private:
     template<typename T, typename Func>
@@ -65,6 +64,7 @@ private:
         watcher->setFuture(QtConcurrent::run(&m_asyncPool, std::forward<Func>(work)));
     }
 
+    bool isTextInputFocused() const;
     void updateShortsButtonUi();
     enum class NavTab { Home, Subscriptions, Search };
     NavTab m_activeNavTab = NavTab::Home;
@@ -78,11 +78,8 @@ private:
     std::atomic<bool> m_isLoadingFeed{false};
     std::atomic<bool> m_isLoadingContinuation{false};
     bool m_isFullscreen = false;
-    QRect m_savedWindowGeometry;
+    QRect m_prevGeometry;
     bool m_wasMaximizedBeforeFullscreen = false;
-#ifdef _WIN32
-    long long m_savedWinStyle = 0;
-#endif
 
     QWidget *m_topBarWidget = nullptr;
     QLineEdit *m_searchInput = nullptr;

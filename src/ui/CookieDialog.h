@@ -13,7 +13,6 @@
 #include <QTextEdit>
 #include <atomic>
 #include <memory>
-#include <thread>
 #include <vector>
 
 class CookieDialog : public QDialog {
@@ -47,8 +46,8 @@ private slots:
 private:
     std::shared_ptr<CookieManager> m_cookieManager;
     YouTubeClient *m_client = nullptr;
-    std::shared_ptr<std::atomic<bool>> m_cancelToken;
-    std::thread m_workerThread;
+    std::shared_ptr<std::atomic<bool>> m_activeCancelToken;
+    void cancelActiveWorker();
 
     QTabWidget *m_tabWidget = nullptr;
 

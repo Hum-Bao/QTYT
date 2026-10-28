@@ -54,7 +54,6 @@ private:
     bool m_isDragging = false;
     int m_hoverMouseX = 0;
 
-    static QString formatTime(double seconds);
     [[nodiscard]] double secondsFromX(int x) const noexcept;
 };
 
@@ -157,6 +156,7 @@ public:
 
     [[nodiscard]] bool isInteracting() const noexcept;
     [[nodiscard]] bool isControlsVisible() const noexcept;
+    [[nodiscard]] static QString formatTime(double seconds);
 
 signals:
     void playPauseClicked();
@@ -224,5 +224,4 @@ private:
     void updateTimeLabel();
     void updateVolumeIcon();
     void animateVolumeExpand(bool expand);
-    static QString formatTime(double seconds);
 };

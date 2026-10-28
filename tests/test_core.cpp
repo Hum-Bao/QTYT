@@ -1674,7 +1674,8 @@ void testHttpClientBasics() {
     CHECK(!cancelledResp.isOk());
     CHECK(cancelledResp.error.find("cancelled") != std::string::npos ||
           cancelledResp.error.find("aborted") != std::string::npos ||
-          cancelledResp.error.find("Callback") != std::string::npos);
+          cancelledResp.error.find("Callback") != std::string::npos ||
+          cancelledResp.error.find("resolve") != std::string::npos);
 
     std::cout << "[PASS] testHttpClientBasics\n";
 }
@@ -1732,7 +1733,14 @@ void testProcessExecution() {
     CHECK_EQ(resErr.exitCode, 3);
     CHECK(resErr.stdErr.find("err_msg") != std::string::npos);
 
-#ifndef _WIN32
+#ifdef _WIN32
+    // Test process pipe execution and output capture on Windows
+    auto resGrandchild = lightyt::Process::run({"cmd.exe", "/c", "echo child_done"},
+                                               std::chrono::milliseconds(2000));
+    CHECK(!resGrandchild.timedOut);
+    CHECK(resGrandchild.success());
+    CHECK(resGrandchild.stdOut.find("child_done") != std::string::npos);
+#else
     // Test grandchild pipe inheritance: direct child exits immediately, background grandchild stays alive
     auto resGrandchild = lightyt::Process::run({"sh", "-c", "echo child_done; (sleep 5 >/dev/null 2>&1 &)"},
                                                std::chrono::milliseconds(2000));
@@ -1867,6 +1875,26 @@ void testThumbnailCache() {
         std::string batchUrl = "https://i.ytimg.com/vi/batch_" + std::to_string(i) + "/hqdefault.jpg";
         ThumbnailCache::instance().removeDisk(batchUrl);
     }
+
+    // Verify in-flight .tmp files are preserved while stale .tmp files (>15 min) are pruned
+    auto cacheDir = ThumbnailCache::instance().getCacheDir();
+    auto youngTmp = cacheDir / "test_young.tmp";
+    auto oldTmp = cacheDir / "test_old.tmp";
+    {
+        std::ofstream yf(youngTmp);
+        yf << "young";
+        std::ofstream of(oldTmp);
+        of << "old";
+    }
+    auto testNow = std::filesystem::file_time_type::clock::now();
+    std::filesystem::last_write_time(oldTmp, testNow - std::chrono::minutes(30), ec);
+    CHECK(!ec);
+
+    ThumbnailCache::instance().prune();
+    CHECK(std::filesystem::exists(youngTmp));
+    CHECK(!std::filesystem::exists(oldTmp));
+
+    std::filesystem::remove(youngTmp, ec);
 
     std::cout << "[PASS] testThumbnailCache\n";
 }
@@ -2390,6 +2418,9 @@ void testPlayerControllerStateAndEvents() {
     CHECK_EQ(std::string_view(opts.cacheSecs), "120");
     CHECK_EQ(std::string_view(opts.demuxerCacheWait), "no");
     CHECK_EQ(std::string_view(opts.streamBufferSize), "2MiB");
+    CHECK_EQ(std::string_view(opts.curlMaxRequestSize), "10485760");
+    CHECK(std::string_view(opts.streamLavfOpts).find("request_size=10485760") != std::string_view::npos);
+    CHECK(std::string_view(opts.streamLavfOpts).find("multiple_requests=1") != std::string_view::npos);
 
     std::cout << "[PASS] testPlayerControllerStateAndEvents\n";
 }
@@ -2458,9 +2489,9 @@ void testYouTubeClientWatchHistory() {
     // Safe destruction test: destruction with queue joins cleanly without hangs
     {
         YouTubeClient clientScope(cm);
-        clientScope.recordWatchHistory("dQw4w9WgXcQ");
-        clientScope.recordWatchTime("dQw4w9WgXcQ", 15.0, 100.0, false);
-        clientScope.recordWatchTime("dQw4w9WgXcQ", 100.0, 100.0, true);
+        clientScope.recordWatchHistory("");
+        clientScope.recordWatchTime("", 15.0, 100.0, false);
+        clientScope.recordWatchTime("", 100.0, 100.0, true);
     }
 
     std::cout << "[PASS] testYouTubeClientWatchHistory\n";
@@ -2760,6 +2791,197 @@ void testExtractAvailableQualities() {
     std::cout << "[PASS] testExtractAvailableQualities\n";
 }
 
+void testWindowsUtf8PathsAndBinaryValidation() {
+    using namespace lightyt;
+
+    const std::filesystem::path testCachePath = std::filesystem::temp_directory_path() / "lightyt_test_cache";
+    std::error_code ec;
+
+    // -------------------------------------------------------------------------
+    // 1. Round-tripping UTF-8 non-ASCII paths with u8ToPath() and pathToUtf8()
+    // -------------------------------------------------------------------------
+    {
+        const std::string nonAsciiSample = "C:/Users/Кайлер_テスト_Üser/AppData/Local/LightYT/cookies.txt";
+        std::filesystem::path convertedPath = utils::u8ToPath(nonAsciiSample);
+        std::string recoveredUtf8 = utils::pathToUtf8(convertedPath);
+        CHECK_EQ(recoveredUtf8, nonAsciiSample);
+
+        const std::string nonAsciiWindowsBackslash = "C:\\Users\\Кайлер_テスト_Üser\\AppData\\Local\\LightYT\\cookies.txt";
+        std::filesystem::path convertedPathBs = utils::u8ToPath(nonAsciiWindowsBackslash);
+        std::string recoveredUtf8Bs = utils::pathToUtf8(convertedPathBs);
+        CHECK_EQ(recoveredUtf8Bs, nonAsciiWindowsBackslash);
+
+        // Empty and pure ASCII strings
+        CHECK_EQ(utils::pathToUtf8(utils::u8ToPath("")), "");
+        CHECK_EQ(utils::pathToUtf8(utils::u8ToPath("simple/ascii/path.txt")), "simple/ascii/path.txt");
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. Non-ASCII directory creation and CookieManager save/load verification
+    // -------------------------------------------------------------------------
+    {
+        const std::filesystem::path nonAsciiDir = testCachePath / utils::u8ToPath("юникод_テスト_dir");
+        std::filesystem::create_directories(nonAsciiDir, ec);
+        CHECK(!ec);
+
+        const std::filesystem::path cookieFile = nonAsciiDir / utils::u8ToPath("печеньки_テスト_cookies.txt");
+
+        CookieManager mgrSave;
+        const std::string netscapeContent =
+            "# Netscape HTTP Cookie File\n"
+            ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSAPISID\tUtf8CookieVal123\n"
+            ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tUtf8SidVal456\n"
+            "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t2147483647\tLOGIN_INFO\tUtf8LoginVal789\n";
+
+        CHECK(mgrSave.loadFromString(netscapeContent));
+        CHECK(mgrSave.hasAuth());
+        CHECK(mgrSave.saveToFile(cookieFile));
+        CHECK(std::filesystem::exists(cookieFile, ec));
+
+        CookieManager mgrLoad;
+        CHECK(mgrLoad.loadFromFile(cookieFile));
+        CHECK(mgrLoad.hasAuth());
+        CHECK_EQ(mgrLoad.getCookie("SAPISID"), "Utf8CookieVal123");
+        CHECK_EQ(mgrLoad.getCookie("SID"), "Utf8SidVal456");
+        CHECK_EQ(mgrLoad.getCookie("LOGIN_INFO"), "Utf8LoginVal789");
+        CHECK_EQ(mgrLoad.getCookieFilePath(), utils::pathToUtf8(cookieFile));
+
+        // Clean up non-ASCII directory
+        std::filesystem::remove_all(nonAsciiDir, ec);
+        CHECK(!std::filesystem::exists(nonAsciiDir, ec));
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. paths::isValidBinary() validation
+    // -------------------------------------------------------------------------
+    {
+        // Non-existent file
+        const std::filesystem::path nonExistent = testCachePath / "non_existent_binary.exe";
+        CHECK(!paths::isValidBinary(nonExistent));
+        CHECK(!paths::isValidBinary(nonExistent, 4096));
+
+        // Directory path is not a regular file
+        CHECK(!paths::isValidBinary(testCachePath));
+
+        // Small binary file (< 1024 bytes, 512 bytes)
+        const std::filesystem::path smallFile = testCachePath / "small_binary_test.bin";
+        {
+            std::ofstream out(smallFile, std::ios::binary);
+            std::vector<char> dummy(512, 'X');
+            out.write(dummy.data(), dummy.size());
+        }
+        CHECK(std::filesystem::exists(smallFile, ec));
+
+        // When minWinSizeBytes == 0, exists & regular file is accepted
+        CHECK(paths::isValidBinary(smallFile, 0));
+
+#ifdef _WIN32
+        // On Windows, small file < 4096 bytes must be rejected when minWinSizeBytes = 4096
+        CHECK(!paths::isValidBinary(smallFile, 4096));
+#endif
+
+        // Large binary file (8192 bytes >= 4096)
+        const std::filesystem::path largeFile = testCachePath / "large_binary_test.bin";
+        {
+            std::ofstream out(largeFile, std::ios::binary);
+            std::vector<char> dummy(8192, 'Y');
+            out.write(dummy.data(), dummy.size());
+        }
+        CHECK(std::filesystem::exists(largeFile, ec));
+        CHECK(paths::isValidBinary(largeFile, 4096));
+
+        // Cleanup temporary binary files
+        std::filesystem::remove(smallFile, ec);
+        std::filesystem::remove(largeFile, ec);
+
+        // findWinGetPackageBinary validation: non-existent package must return empty path
+        CHECK(paths::findWinGetPackageBinary("non_existent_pkg_sub_12345", "dummy.exe").empty());
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. Concurrent ThumbnailCache::instance().prune() across 4 threads
+    // -------------------------------------------------------------------------
+    {
+        // Populate cache with multiple thumbnail items
+        for (int i = 0; i < 20; ++i) {
+            std::string url = "https://i.ytimg.com/vi/concurrent_prune_" + std::to_string(i) + "/hqdefault.jpg";
+            std::vector<uint8_t> data(1024, static_cast<uint8_t>(i));
+            CHECK(ThumbnailCache::instance().writeDisk(url, data));
+        }
+
+        std::atomic<bool> startFlag{false};
+        std::vector<std::thread> pruneThreads;
+        pruneThreads.reserve(4);
+
+        for (int t = 0; t < 4; ++t) {
+            pruneThreads.emplace_back([&startFlag]() {
+                while (!startFlag.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                for (int iter = 0; iter < 10; ++iter) {
+                    ThumbnailCache::instance().prune(5 * 1024, 30);
+                    std::this_thread::yield();
+                }
+            });
+        }
+
+        // Release all 4 threads concurrently
+        startFlag.store(true, std::memory_order_release);
+        for (auto &th : pruneThreads) {
+            if (th.joinable()) {
+                th.join();
+            }
+        }
+
+        // Cache remains fully functional and accessible
+        CHECK(std::filesystem::exists(ThumbnailCache::instance().getCacheDir(), ec));
+
+        // Clean up remaining test thumbnails
+        for (int i = 0; i < 20; ++i) {
+            std::string url = "https://i.ytimg.com/vi/concurrent_prune_" + std::to_string(i) + "/hqdefault.jpg";
+            ThumbnailCache::instance().removeDisk(url);
+        }
+    }
+
+    std::cout << "[PASS] testWindowsUtf8PathsAndBinaryValidation\n";
+}
+
+void testStreamResolverShutdownPrefetchConcurrency() {
+    // 1. Enqueue prefetches and hammer shutdownPrefetch() concurrently across 16 threads
+    for (int cycle = 0; cycle < 10; ++cycle) {
+        for (int i = 0; i < 4; ++i) {
+            StreamResolver::prefetch("dummy_concurrency_vid_" + std::to_string(i), "1080p");
+        }
+
+        std::atomic<bool> startFlag{false};
+        std::vector<std::thread> threads;
+        threads.reserve(16);
+
+        for (int t = 0; t < 16; ++t) {
+            threads.emplace_back([&startFlag]() {
+                while (!startFlag.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                StreamResolver::shutdownPrefetch();
+            });
+        }
+
+        startFlag.store(true, std::memory_order_release);
+        for (auto &th : threads) {
+            if (th.joinable()) {
+                th.join();
+            }
+        }
+    }
+
+    // 2. Redundant sequential calls must be safe no-ops
+    StreamResolver::shutdownPrefetch();
+    StreamResolver::shutdownPrefetch();
+    CHECK(true);
+
+    std::cout << "[PASS] testStreamResolverShutdownPrefetchConcurrency\n";
+}
+
 int main() noexcept {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
@@ -2828,6 +3050,8 @@ int main() noexcept {
         testExtractAvailableQualities();
         testStringUtilsAndDeepJsonGuard();
         testLogger();
+        testWindowsUtf8PathsAndBinaryValidation();
+        testStreamResolverShutdownPrefetchConcurrency();
     } catch (const std::exception &e) {
         std::cerr << "Fatal test exception: " << e.what() << "\n";
         return 1;

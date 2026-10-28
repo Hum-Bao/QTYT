@@ -24,15 +24,7 @@
 #include <iostream>
 #include <vector>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
+#include "../utils/StringUtils.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), m_cookieManager(std::make_shared<CookieManager>()),
@@ -54,10 +46,11 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     if (loaded && m_cookieManager->hasAuth()) {
-        m_cookieManager->setCookieFilePath(chosenCookiePath.string());
-        LOG_INFO("[MainWindow] Loaded authenticated cookies.txt successfully ({})", chosenCookiePath.string());
+        m_cookieManager->setCookieFilePath(lightyt::utils::pathToUtf8(chosenCookiePath));
+        LOG_INFO("[MainWindow] Loaded authenticated cookies.txt successfully ({})",
+                 lightyt::utils::pathToUtf8(chosenCookiePath));
     } else if (loaded) {
-        m_cookieManager->setCookieFilePath(chosenCookiePath.string());
+        m_cookieManager->setCookieFilePath(lightyt::utils::pathToUtf8(chosenCookiePath));
         LOG_INFO("[MainWindow] Loaded cookies.txt (guest session)");
     } else {
         LOG_INFO("[MainWindow] No cookies.txt found. Starting in Guest Mode");
@@ -71,18 +64,19 @@ MainWindow::MainWindow(QWidget *parent)
         savedAuthUser = 0;
     }
     if (!savedPageId.isEmpty() || (savedAuthUser >= 0 && !savedChannelName.isEmpty())) {
-        m_client->setSelectedChannel(savedPageId.toStdString(), savedAuthUser, savedChannelName.toStdString());
+        QByteArray pageIdBytes = savedPageId.toUtf8();
+        QByteArray nameBytes = savedChannelName.toUtf8();
+        m_client->setSelectedChannel(std::string_view(pageIdBytes.constData(), pageIdBytes.size()), savedAuthUser,
+                                     std::string_view(nameBytes.constData(), nameBytes.size()));
         LOG_INFO("[MainWindow] Restored active channel profile: '{}' (pageId: '{}', authUser: {})",
-                 savedChannelName.toStdString(), savedPageId.toStdString(), savedAuthUser);
+                 std::string_view(nameBytes.constData(), nameBytes.size()),
+                 std::string_view(pageIdBytes.constData(), pageIdBytes.size()), savedAuthUser);
     }
 
     setupUi();
 
     // Restore window geometry, state, and player preferences from AppSettings
-    auto settingsPath = lightyt::paths::getSettingsFilePath();
-    QString settingsPathQ = QString::fromUtf8(settingsPath.string().c_str());
-    QSettings iniFile(settingsPathQ, QSettings::IniFormat);
-    if (!iniFile.contains("allowAv1") && StreamResolver::hasJsRuntime()) {
+    if (!AppSettings::instance().containsKey("allowAv1") && StreamResolver::hasJsRuntime()) {
         AppSettings::instance().setAllowAv1(true);
         LOG_INFO("[MainWindow] JavaScript runtime detected: enabling AV1/VP9 codecs by default");
     }
@@ -269,10 +263,11 @@ void MainWindow::setupUi() {
 
     mainLayout->addWidget(m_stackedWidget, 1);
 
-    // Feature 21: Global keyboard shortcuts 'T' (Theater Mode) and 'Shift+N' (Next Video) with search input focus guards
-    auto *theaterShortcut = new QShortcut(QKeySequence(Qt::Key_T), this);
-    connect(theaterShortcut, &QShortcut::activated, this, [this]() {
-        if (m_searchInput && m_searchInput->hasFocus()) {
+    // Window-scoped keyboard shortcuts with text input and active page guards
+    auto *shortcutTheater = new QShortcut(QKeySequence(Qt::Key_T), this);
+    shortcutTheater->setContext(Qt::WindowShortcut);
+    connect(shortcutTheater, &QShortcut::activated, this, [this]() {
+        if (m_stackedWidget->currentWidget() != m_playerWidget || isTextInputFocused()) {
             return;
         }
         if (m_playerWidget) {
@@ -280,9 +275,10 @@ void MainWindow::setupUi() {
         }
     });
 
-    auto *nextShortcut = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_N), this);
-    connect(nextShortcut, &QShortcut::activated, this, [this]() {
-        if (m_searchInput && m_searchInput->hasFocus()) {
+    auto *shortcutNext = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_N), this);
+    shortcutNext->setContext(Qt::WindowShortcut);
+    connect(shortcutNext, &QShortcut::activated, this, [this]() {
+        if (m_stackedWidget->currentWidget() != m_playerWidget || isTextInputFocused()) {
             return;
         }
         if (m_playerWidget) {
@@ -290,9 +286,30 @@ void MainWindow::setupUi() {
         }
     });
 
+    auto *shortcutF11 = new QShortcut(QKeySequence(Qt::Key_F11), this);
+    shortcutF11->setContext(Qt::WindowShortcut);
+    connect(shortcutF11, &QShortcut::activated, this, &MainWindow::onFullscreenToggleRequested);
+
+    auto *shortcutSearch = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_F), this);
+    shortcutSearch->setContext(Qt::WindowShortcut);
+    connect(shortcutSearch, &QShortcut::activated, this, [this]() {
+        if (m_searchInput) {
+            m_searchInput->setFocus();
+            m_searchInput->selectAll();
+        }
+    });
+
     statusBar()->setStyleSheet(
         "QStatusBar { background-color: #0f0f0f; color: #717171; border-top: 1px solid #1f1f1f; font-size: 11px; }");
     setStatusText("Ready");
+}
+
+bool MainWindow::isTextInputFocused() const {
+    QWidget *fw = focusWidget();
+    if (!fw) {
+        return false;
+    }
+    return fw->inherits("QLineEdit") || fw->inherits("QTextEdit") || fw->inherits("QPlainTextEdit");
 }
 
 void MainWindow::updateShortsButtonUi() {
@@ -410,7 +427,10 @@ void MainWindow::onAuthButtonClicked() {
 
 void MainWindow::onChannelChanged(const QString &pageId, int authUserIndex, const QString &channelName) {
     if (m_client) {
-        m_client->setSelectedChannel(pageId.toStdString(), authUserIndex, channelName.toStdString());
+        QByteArray pageIdBytes = pageId.toUtf8();
+        QByteArray nameBytes = channelName.toUtf8();
+        m_client->setSelectedChannel(std::string_view(pageIdBytes.constData(), pageIdBytes.size()), authUserIndex,
+                                     std::string_view(nameBytes.constData(), nameBytes.size()));
     }
     AppSettings::instance().setSelectedChannel(pageId, authUserIndex, channelName);
     AppSettings::instance().sync();
@@ -433,7 +453,7 @@ void MainWindow::onSubscriptionsClicked() {
         QMessageBox::information(
             this, "Authentication Required",
             "Viewing Subscriptions requires logging into YouTube with your cookies.txt.\n\n"
-            "Please click the 'Guest Mode' button in the top right to paste or load your cookies.");
+            "Please click the 'Sign in' button in the top right to paste or load your cookies.");
         return;
     }
     if (m_stackedWidget && m_stackedWidget->currentIndex() == 1 && m_activeNavTab == NavTab::Subscriptions) {
@@ -592,7 +612,7 @@ void MainWindow::onVideoSelected(const VideoItem &item) {
 }
 
 void MainWindow::onBackToFeedRequested() {
-    if (m_isFullscreen) {
+    if (windowState().testFlag(Qt::WindowFullScreen)) {
         onFullscreenToggleRequested();
     }
     if (m_playerWidget) {
@@ -603,74 +623,45 @@ void MainWindow::onBackToFeedRequested() {
 }
 
 void MainWindow::onFullscreenToggleRequested() {
-    m_isFullscreen = !m_isFullscreen;
-    if (m_isFullscreen) {
+    const bool isCurrentlyFullScreen = windowState().testFlag(Qt::WindowFullScreen);
+    if (!isCurrentlyFullScreen) {
         m_wasMaximizedBeforeFullscreen = isMaximized();
-        m_savedWindowGeometry = geometry();
+        m_prevGeometry = m_wasMaximizedBeforeFullscreen ? normalGeometry() : geometry();
+        m_isFullscreen = true;
+
         m_topBarWidget->hide();
-        if (statusBar())
+        if (statusBar()) {
             statusBar()->hide();
-
-#ifdef _WIN32
-        HWND hwnd = reinterpret_cast<HWND>(winId());
-        m_savedWinStyle = GetWindowLongPtr(hwnd, GWL_STYLE);
-        LONG_PTR style = m_savedWinStyle;
-        style &= ~(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE | WS_MINIMIZE);
-        style |= WS_POPUP;
-        SetWindowLongPtr(hwnd, GWL_STYLE, style);
-
-        QScreen *targetScreen = screen() ? screen() : QGuiApplication::primaryScreen();
-        QRect screenGeom = targetScreen ? targetScreen->geometry() : geometry();
-
-        // Setting the height to screenGeom.height() + 1 intentionally prevents Windows DWM
-        // from classifying the window as an exclusive DirectFlip / Independent Flip target.
-        // This completely eliminates the 2-3 second display blackout / mode renegotiation stall!
-        int fsW = screenGeom.width();
-        int fsH = screenGeom.height() + 1;
-
-        SetWindowPos(hwnd, HWND_TOP, screenGeom.x(), screenGeom.y(), fsW, fsH, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-        setGeometry(QRect(screenGeom.x(), screenGeom.y(), fsW, fsH));
-#else
-        setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
-        QScreen *targetScreen = screen() ? screen() : QGuiApplication::primaryScreen();
-        if (targetScreen) {
-            QRect g = targetScreen->geometry();
-            setGeometry(g.x(), g.y(), g.width(), g.height() + 1);
         }
-        show();
-#endif
+        if (m_playerWidget) {
+            m_playerWidget->setFullscreen(true);
+        }
+
+        showFullScreen();
     } else {
-#ifdef _WIN32
-        HWND hwnd = reinterpret_cast<HWND>(winId());
-        SetWindowLongPtr(hwnd, GWL_STYLE, m_savedWinStyle);
-        SetWindowPos(hwnd, nullptr, m_savedWindowGeometry.x(), m_savedWindowGeometry.y(), m_savedWindowGeometry.width(),
-                     m_savedWindowGeometry.height(), SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-        setGeometry(m_savedWindowGeometry);
-        if (m_wasMaximizedBeforeFullscreen) {
-            showMaximized();
-        } else {
-            showNormal();
+        m_isFullscreen = false;
+
+        if (m_playerWidget) {
+            m_playerWidget->setFullscreen(false);
         }
-#else
-        setWindowFlags(windowFlags() & ~Qt::FramelessWindowHint);
-        if (m_wasMaximizedBeforeFullscreen) {
-            showMaximized();
-        } else {
-            setGeometry(m_savedWindowGeometry);
-            showNormal();
-        }
-#endif
         m_topBarWidget->show();
-        if (statusBar())
+        if (statusBar()) {
             statusBar()->show();
-    }
-    if (m_playerWidget) {
-        m_playerWidget->setFullscreen(m_isFullscreen);
+        }
+
+        if (m_wasMaximizedBeforeFullscreen) {
+            showMaximized();
+        } else {
+            showNormal();
+            if (m_prevGeometry.isValid()) {
+                setGeometry(m_prevGeometry);
+            }
+        }
     }
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
-    if (m_isFullscreen) {
+    if (windowState().testFlag(Qt::WindowFullScreen)) {
         onFullscreenToggleRequested();
     }
     ++m_feedGeneration;  // Cancel any in-flight async watchers
@@ -684,27 +675,4 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     }
     AppSettings::instance().sync();
     QMainWindow::closeEvent(event);
-}
-
-void MainWindow::keyPressEvent(QKeyEvent *event) {
-    if (m_searchInput && m_searchInput->hasFocus()) {
-        QMainWindow::keyPressEvent(event);
-        return;
-    }
-
-    if (event->key() == Qt::Key_T && event->modifiers() == Qt::NoModifier) {
-        if (m_playerWidget) {
-            m_playerWidget->toggleTheaterMode();
-            event->accept();
-            return;
-        }
-    } else if (event->key() == Qt::Key_N && (event->modifiers() & Qt::ShiftModifier)) {
-        if (m_playerWidget) {
-            m_playerWidget->playNextVideo();
-            event->accept();
-            return;
-        }
-    }
-
-    QMainWindow::keyPressEvent(event);
 }

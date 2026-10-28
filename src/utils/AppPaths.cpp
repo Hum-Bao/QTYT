@@ -1,4 +1,5 @@
 #include "AppPaths.h"
+#include "StringUtils.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -73,11 +74,16 @@ std::filesystem::path getThumbnailCacheDir() {
 
 std::filesystem::path getExecutableDir() {
 #ifdef _WIN32
-    std::wstring buf(MAX_PATH, L'\0');
-    DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
-    if (len > 0) {
-        buf.resize(len);
-        return fs::path(buf).parent_path();
+    std::vector<wchar_t> buf(MAX_PATH);
+    while (buf.size() <= 32768) {
+        DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+        if (len == 0) {
+            break;
+        }
+        if (len < buf.size()) {
+            return std::filesystem::path(buf.data(), buf.data() + len).parent_path();
+        }
+        buf.resize(buf.size() * 2);
     }
     return fs::current_path();
 #else
@@ -104,6 +110,67 @@ std::vector<std::filesystem::path> getLocalCandidatePaths(std::string_view filen
     auto exeDir = getExecutableDir();
     std::filesystem::path fn(filename);
     return {exeDir / "lib" / fn, exeDir.parent_path() / "lib" / fn, fs::path("lib") / fn, exeDir / fn};
+}
+
+bool isValidBinary(const std::filesystem::path &p, std::uintmax_t minWinSizeBytes) {
+    std::error_code ec;
+    if (!fs::exists(p, ec) || !fs::is_regular_file(p, ec)) {
+        return false;
+    }
+#ifdef _WIN32
+    if (minWinSizeBytes > 0) {
+        auto sz = fs::file_size(p, ec);
+        if (ec || sz < minWinSizeBytes) {
+            return false;
+        }
+    }
+#else
+    (void)minWinSizeBytes;
+#endif
+    return true;
+}
+
+std::filesystem::path findWinGetPackageBinary(std::string_view packageSubstring,
+                                              std::string_view fileName,
+                                              std::uintmax_t minWinSizeBytes) {
+#ifdef _WIN32
+    const wchar_t *localAppData = _wgetenv(L"LOCALAPPDATA");
+    if (localAppData == nullptr || localAppData[0] == L'\0') {
+        return {};
+    }
+    std::filesystem::path wingetDir = std::filesystem::path(localAppData) / "Microsoft" / "WinGet" / "Packages";
+    std::error_code ec;
+    if (!fs::exists(wingetDir, ec) || !fs::is_directory(wingetDir, ec)) {
+        return {};
+    }
+    std::filesystem::path targetName = lightyt::utils::u8ToPath(fileName);
+    for (const auto &entry : fs::directory_iterator(wingetDir, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_directory(ec)) {
+            continue;
+        }
+        std::string dirName = lightyt::utils::pathToUtf8(entry.path().filename());
+        if (packageSubstring.empty() || dirName.find(packageSubstring) != std::string::npos) {
+            for (const auto &sub : fs::recursive_directory_iterator(
+                     entry.path(), fs::directory_options::skip_permission_denied, ec)) {
+                if (ec) {
+                    break;
+                }
+                if (sub.is_regular_file(ec) && sub.path().filename() == targetName &&
+                    isValidBinary(sub.path(), minWinSizeBytes)) {
+                    return sub.path();
+                }
+            }
+        }
+    }
+#else
+    (void)packageSubstring;
+    (void)fileName;
+    (void)minWinSizeBytes;
+#endif
+    return {};
 }
 
 std::filesystem::path findCandidateFile(std::string_view filename,

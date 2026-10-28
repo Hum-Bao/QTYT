@@ -1,4 +1,5 @@
 #include "Logger.h"
+#include "StringUtils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -105,7 +106,11 @@ void Logger::setLogFile(std::string_view path) {
     }
     m_filePath = std::string(path);
     if (!m_filePath.empty()) {
+#ifdef _WIN32
+        m_fileHandle = _wfopen(lightyt::utils::u8ToPath(m_filePath).c_str(), L"a");
+#else
         m_fileHandle = std::fopen(m_filePath.c_str(), "a");
+#endif
         if (m_fileHandle == nullptr) {
             std::fprintf(stderr, "[Logger] Failed to open log file: %s\n", m_filePath.c_str());
         }

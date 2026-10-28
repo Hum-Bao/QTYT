@@ -3,6 +3,7 @@
 #include "../utils/AppPaths.h"
 #include "../utils/AppSettings.h"
 #include "../utils/Logger.h"
+#include "../utils/StringUtils.h"
 
 #include <QApplication>
 #include <QFileDialog>
@@ -12,9 +13,9 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QTabWidget>
+#include <QThreadPool>
 #include <QVBoxLayout>
 #include <filesystem>
-#include <thread>
 
 CookieDialog::CookieDialog(std::shared_ptr<CookieManager> cookieManager, YouTubeClient *client, QWidget *parent)
     : QDialog(parent), m_cookieManager(std::move(cookieManager)), m_client(client) {
@@ -23,32 +24,24 @@ CookieDialog::CookieDialog(std::shared_ptr<CookieManager> cookieManager, YouTube
     updateActiveChannelDisplay();
 }
 
-CookieDialog::~CookieDialog() {
-    if (m_cancelToken) {
-        m_cancelToken->store(true);
-    }
-    if (m_workerThread.joinable()) {
-        m_workerThread.join();
+void CookieDialog::cancelActiveWorker() {
+    if (m_activeCancelToken) {
+        m_activeCancelToken->store(true, std::memory_order_relaxed);
+        m_activeCancelToken.reset();
     }
 }
 
+CookieDialog::~CookieDialog() {
+    cancelActiveWorker();
+}
+
 void CookieDialog::closeEvent(QCloseEvent *event) {
-    if (m_cancelToken) {
-        m_cancelToken->store(true);
-    }
-    if (m_workerThread.joinable()) {
-        m_workerThread.join();
-    }
+    cancelActiveWorker();
     QDialog::closeEvent(event);
 }
 
 void CookieDialog::done(int r) {
-    if (m_cancelToken) {
-        m_cancelToken->store(true);
-    }
-    if (m_workerThread.joinable()) {
-        m_workerThread.join();
-    }
+    cancelActiveWorker();
     QDialog::done(r);
 }
 
@@ -550,66 +543,83 @@ void CookieDialog::onDetectChannelsClicked() {
     m_detectStatusLabel->setText("Detecting associated channels from YouTube API...");
     m_detectStatusLabel->setStyleSheet("color: #60a5fa; font-size: 11px;");
 
-    if (m_cancelToken) {
-        m_cancelToken->store(true);
-    }
-    if (m_workerThread.joinable()) {
-        m_workerThread.join();
-    }
-    m_cancelToken = std::make_shared<std::atomic<bool>>(false);
-    auto cancel = m_cancelToken;
-    auto *client = m_client;
+    cancelActiveWorker();
 
-    QPointer<CookieDialog> weakThis(this);
-    m_workerThread = std::thread([weakThis, client, cancel]() {
-        if (!client || (cancel && cancel->load()))
+    auto cancelToken = std::make_shared<std::atomic<bool>>(false);
+    m_activeCancelToken = cancelToken;
+
+    // Create an isolated snapshot of cookies so the background worker never accesses
+    // m_client or m_cookieManager across threads.
+    auto tempCookieMgr = std::make_shared<CookieManager>(*m_cookieManager);
+
+    QPointer<CookieDialog> self(this);
+
+    QThreadPool::globalInstance()->start([self, tempCookieMgr, cancelToken]() {
+        if (cancelToken->load()) {
             return;
+        }
 
+        // Self-contained client running purely in background thread pool context
+        YouTubeClient detectClient(tempCookieMgr);
         std::string err;
-        auto channels = client->fetchAccountChannels(err, /*forceRefresh=*/true, cancel.get());
+        auto channels = detectClient.fetchAccountChannels(err, /*forceRefresh=*/true, cancelToken.get());
 
-        if (cancel && cancel->load())
+        if (cancelToken->load() || !self) {
             return;
+        }
+
         QMetaObject::invokeMethod(
-            qApp,
-            [weakThis, channels = std::move(channels), err = std::move(err), cancel]() mutable {
-                if (!weakThis || (cancel && cancel->load()))
+            self.data(),
+            [self, channels = std::move(channels), err = std::move(err), tempCookieMgr, cancelToken]() mutable {
+                if (!self || cancelToken->load()) {
                     return;
-                weakThis->m_detectChannelsBtn->setEnabled(true);
-                weakThis->m_detectedChannels = std::move(channels);
+                }
 
-                weakThis->m_channelCombo->blockSignals(true);
-                weakThis->m_channelCombo->clear();
-                weakThis->m_channelCombo->addItem("Default Account (Session Default)");
+                self->m_detectChannelsBtn->setEnabled(true);
 
-                if (weakThis->m_detectedChannels.empty()) {
-                    weakThis->m_detectStatusLabel->setText(
+                // Safely synchronize any refreshed session cookies back to master store
+                if (tempCookieMgr && self->m_cookieManager) {
+                    *self->m_cookieManager = *tempCookieMgr;
+                }
+
+                if (self->m_client) {
+                    self->m_client->clearCachedAccountChannels();
+                }
+
+                self->m_detectedChannels = std::move(channels);
+
+                self->m_channelCombo->blockSignals(true);
+                self->m_channelCombo->clear();
+                self->m_channelCombo->addItem("Default Account (Session Default)");
+
+                if (self->m_detectedChannels.empty()) {
+                    self->m_detectStatusLabel->setText(
                         QString("Detection note: %1")
                             .arg(err.empty() ? "No channel profiles returned by API. You can manually configure "
                                                "Account Slot or Page ID below."
                                              : QString::fromUtf8(err.c_str())));
-                    weakThis->m_detectStatusLabel->setStyleSheet("color: #fbbf24; font-size: 11px;");
+                    self->m_detectStatusLabel->setStyleSheet("color: #fbbf24; font-size: 11px;");
                 } else {
-                    weakThis->m_detectStatusLabel->setText(
-                        QString("Successfully found %1 channel profile(s)!").arg(weakThis->m_detectedChannels.size()));
-                    weakThis->m_detectStatusLabel->setStyleSheet("color: #4ade80; font-size: 11px;");
+                    self->m_detectStatusLabel->setText(
+                        QString("Successfully found %1 channel profile(s)!").arg(self->m_detectedChannels.size()));
+                    self->m_detectStatusLabel->setStyleSheet("color: #4ade80; font-size: 11px;");
 
                     std::string activePageId;
                     std::string activeName;
                     int activeAuthIdx = -1;
-                    if (weakThis->m_userHasSelectedChannel) {
-                        activePageId = weakThis->m_pageIdEdit->text().trimmed().toStdString();
-                        activeName = weakThis->m_channelNameEdit->text().trimmed().toStdString();
-                        activeAuthIdx = weakThis->m_accountIndexCombo->currentData().toInt();
+                    if (self->m_userHasSelectedChannel) {
+                        activePageId = self->m_pageIdEdit->text().trimmed().toStdString();
+                        activeName = self->m_channelNameEdit->text().trimmed().toStdString();
+                        activeAuthIdx = self->m_accountIndexCombo->currentData().toInt();
                     } else {
-                        activePageId = weakThis->m_client ? weakThis->m_client->getSelectedChannelPageId() : "";
-                        activeName = weakThis->m_client ? weakThis->m_client->getSelectedChannelName() : "";
-                        activeAuthIdx = weakThis->m_client ? weakThis->m_client->getSelectedAuthUserIndex() : -1;
+                        activePageId = self->m_client ? self->m_client->getSelectedChannelPageId() : "";
+                        activeName = self->m_client ? self->m_client->getSelectedChannelName() : "";
+                        activeAuthIdx = self->m_client ? self->m_client->getSelectedAuthUserIndex() : -1;
                     }
 
                     int selectIdx = 0;
-                    for (size_t i = 0; i < weakThis->m_detectedChannels.size(); ++i) {
-                        const auto &ch = weakThis->m_detectedChannels[i];
+                    for (size_t i = 0; i < self->m_detectedChannels.size(); ++i) {
+                        const auto &ch = self->m_detectedChannels[i];
                         QString label = QString::fromUtf8(ch.name.c_str());
                         if (!ch.handle.empty() && ch.handle != "No channel") {
                             label += QString(" (%1)").arg(QString::fromUtf8(ch.handle.c_str()));
@@ -624,7 +634,7 @@ void CookieDialog::onDetectChannelsClicked() {
                             label += QString(" [Personal Slot %1]").arg(ch.authUserIndex >= 0 ? ch.authUserIndex : 0);
                         }
 
-                        weakThis->m_channelCombo->addItem(label);
+                        self->m_channelCombo->addItem(label);
 
                         if (selectIdx == 0) {
                             if (!activePageId.empty() && ch.pageId == activePageId) {
@@ -634,18 +644,18 @@ void CookieDialog::onDetectChannelsClicked() {
                             } else if (activePageId.empty() && activeAuthIdx >= 0 &&
                                        ch.authUserIndex == activeAuthIdx) {
                                 selectIdx = static_cast<int>(i) + 1;
-                            } else if (ch.isSelected && !weakThis->m_userHasSelectedChannel) {
+                            } else if (ch.isSelected && !self->m_userHasSelectedChannel) {
                                 selectIdx = static_cast<int>(i) + 1;
                             }
                         }
                     }
 
                     if (selectIdx > 0) {
-                        weakThis->m_channelCombo->setCurrentIndex(selectIdx);
+                        self->m_channelCombo->setCurrentIndex(selectIdx);
                     }
                 }
-                weakThis->m_channelCombo->blockSignals(false);
-                weakThis->updateActiveChannelDisplay();
+                self->m_channelCombo->blockSignals(false);
+                self->updateActiveChannelDisplay();
             },
             Qt::QueuedConnection);
     });
@@ -706,7 +716,10 @@ void CookieDialog::applyChannelSelection(bool closeDialog) {
     }
 
     if (m_client) {
-        m_client->setSelectedChannel(pageId.toStdString(), authUserIndex, name.toStdString());
+        QByteArray pageIdBytes = pageId.toUtf8();
+        QByteArray nameBytes = name.toUtf8();
+        m_client->setSelectedChannel(std::string_view(pageIdBytes.constData(), pageIdBytes.size()), authUserIndex,
+                                     std::string_view(nameBytes.constData(), nameBytes.size()));
     }
 
     AppSettings::instance().setSelectedChannel(pageId, authUserIndex, name);
@@ -715,8 +728,9 @@ void CookieDialog::applyChannelSelection(bool closeDialog) {
     m_userHasSelectedChannel = false;
     updateActiveChannelDisplay();
     emit channelChanged(pageId, authUserIndex, name);
-    LOG_INFO("[CookieDialog] Applied active channel: '{}' (pageId: '{}', authUser: {})", name.toStdString(),
-             pageId.toStdString(), authUserIndex);
+    LOG_INFO("[CookieDialog] Applied active channel: '{}' (pageId: '{}', authUser: {})",
+             std::string_view(name.toUtf8().constData(), name.toUtf8().size()),
+             std::string_view(pageId.toUtf8().constData(), pageId.toUtf8().size()), authUserIndex);
     if (closeDialog) {
         QDialog::accept();
     }
@@ -750,8 +764,9 @@ void CookieDialog::onImportFileClicked() {
         if (m_cookieManager->saveToCanonicalAppData()) {
             LOG_INFO("[CookieDialog] Saved imported cookies to {}", m_cookieManager->getCookieFilePath());
         } else {
-            m_cookieManager->setCookieFilePath(sourcePath.string());
-            LOG_WARN("[CookieDialog] Could not mirror cookies to AppData, using source file");
+            m_cookieManager->setCookieFilePath(lightyt::utils::pathToUtf8(sourcePath));
+            LOG_WARN("[CookieDialog] Could not mirror cookies to AppData, using source file: {}",
+                     lightyt::utils::pathToUtf8(sourcePath));
         }
         if (m_client) {
             m_client->clearCachedAccountChannels();
@@ -792,6 +807,7 @@ void CookieDialog::onSaveClicked() {
 
 void CookieDialog::onClearClicked() {
     if (m_cookieManager) {
+        cancelActiveWorker();
         m_cookieManager->clear();
         m_cookieManager->setCookieFilePath("");
         auto appData = lightyt::paths::getAppDataDir();
@@ -802,6 +818,17 @@ void CookieDialog::onClearClicked() {
             m_client->setSelectedChannel("", -1, "");
         }
         AppSettings::instance().setSelectedChannel("", -1, "");
+        m_detectedChannels.clear();
+        if (m_channelCombo) {
+            m_channelCombo->blockSignals(true);
+            m_channelCombo->clear();
+            m_channelCombo->addItem("Default Account (Session Default)");
+            m_channelCombo->blockSignals(false);
+        }
+        if (m_detectStatusLabel) {
+            m_detectStatusLabel->setText("Cookies cleared. Import or paste cookies to detect channels.");
+            m_detectStatusLabel->setStyleSheet("color: #888888; font-size: 11px;");
+        }
         updateActiveChannelDisplay();
         updateStatusDisplay();
         emit cookiesUpdated();

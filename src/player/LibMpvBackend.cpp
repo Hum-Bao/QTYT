@@ -77,6 +77,8 @@ bool LibMpvBackend::start(int64_t windowId) {
         api.set_option_string(m_mpv, "demuxer-cache-wait", bufOpts.demuxerCacheWait);
         api.set_option_string(m_mpv, "force-seekable", "yes");
         api.set_option_string(m_mpv, "stream-buffer-size", bufOpts.streamBufferSize);
+        api.set_option_string(m_mpv, "curl-max-request-size", bufOpts.curlMaxRequestSize);
+        api.set_option_string(m_mpv, "stream-lavf-o", bufOpts.streamLavfOpts);
         api.set_option_string(m_mpv, "demuxer-donate-buffer", "yes");
     }
 
@@ -102,7 +104,6 @@ bool LibMpvBackend::start(int64_t windowId) {
         api.observe_property(m_mpv, 4, "paused-for-cache", MPV_FORMAT_FLAG);
         api.observe_property(m_mpv, 5, "demuxer-cache-duration", MPV_FORMAT_DOUBLE);
         api.observe_property(m_mpv, 6, "eof-reached", MPV_FORMAT_FLAG);
-        api.observe_property(m_mpv, 7, "cache-speed", MPV_FORMAT_INT64);
     }
 
     m_running = true;

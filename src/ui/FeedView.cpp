@@ -8,6 +8,32 @@
 #include <QWheelEvent>
 #include <algorithm>
 
+namespace {
+
+constexpr const char *kGridFeedStyleSheet =
+    "QListView {"
+    "  background-color: #0f0f0f;"
+    "  border: none;"
+    "  padding: 12px;"
+    "}"
+    "QScrollBar:vertical {"
+    "  background: #0f0f0f; width: 10px; margin: 0px;"
+    "}"
+    "QScrollBar::handle:vertical {"
+    "  background: #333333; min-height: 20px; border-radius: 5px;"
+    "}"
+    "QScrollBar::handle:vertical:hover { background: #555555; }"
+    "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }";
+
+constexpr const char *kCompactFeedStyleSheet =
+    "QListView {"
+    "  background-color: transparent;"
+    "  border: none;"
+    "  padding: 0px;"
+    "}";
+
+}  // namespace
+
 FeedView::FeedView(QWidget *parent)
     : QListView(parent), m_model(new FeedModel(this)), m_delegate(new VideoCardDelegate(this)),
       m_thumbLoader(std::make_unique<ThumbnailLoader>(this)) {
@@ -23,19 +49,7 @@ FeedView::FeedView(QWidget *parent)
     setMouseTracking(true);
     setSpacing(0);
 
-    setStyleSheet("QListView {"
-                  "  background-color: #0f0f0f;"
-                  "  border: none;"
-                  "  padding: 12px;"
-                  "}"
-                  "QScrollBar:vertical {"
-                  "  background: #0f0f0f; width: 10px; margin: 0px;"
-                  "}"
-                  "QScrollBar::handle:vertical {"
-                  "  background: #333333; min-height: 20px; border-radius: 5px;"
-                  "}"
-                  "QScrollBar::handle:vertical:hover { background: #555555; }"
-                  "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }");
+    setStyleSheet(kGridFeedStyleSheet);
 
     connect(this, &QListView::clicked, this, &FeedView::onItemClicked);
 
@@ -73,29 +87,13 @@ void FeedView::setLayoutMode(CardLayoutMode mode) {
         m_forwardWheelEvents = true;
         setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        setStyleSheet("QListView {"
-                      "  background-color: transparent;"
-                      "  border: none;"
-                      "  padding: 0px;"
-                      "}");
+        setStyleSheet(kCompactFeedStyleSheet);
     } else {
         m_forwardWheelEvents = false;
         setMinimumHeight(0);
         setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        setStyleSheet("QListView {"
-                      "  background-color: #0f0f0f;"
-                      "  border: none;"
-                      "  padding: 12px;"
-                      "}"
-                      "QScrollBar:vertical {"
-                      "  background: #0f0f0f; width: 10px; margin: 0px;"
-                      "}"
-                      "QScrollBar::handle:vertical {"
-                      "  background: #333333; min-height: 20px; border-radius: 5px;"
-                      "}"
-                      "QScrollBar::handle:vertical:hover { background: #555555; }"
-                      "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }");
+        setStyleSheet(kGridFeedStyleSheet);
     }
     updateGridLayout();
 }
@@ -143,10 +141,12 @@ void FeedView::updateGridLayout() {
         int availableWidth = std::max(240, viewport()->width());
         constexpr int compactHeight = 102;
         QSize cellSize(availableWidth, compactHeight);
-        if (m_delegate) {
+        if (m_delegate && m_delegate->cardSize() != cellSize) {
             m_delegate->setCardSize(cellSize);
         }
-        setGridSize(cellSize);
+        if (gridSize() != cellSize) {
+            setGridSize(cellSize);
+        }
         if (m_model) {
             int totalHeight = m_model->rowCount() * compactHeight;
             setMinimumHeight(totalHeight);
@@ -168,10 +168,12 @@ void FeedView::updateGridLayout() {
     int cardHeight = thumbH + 100;
 
     QSize cellSize(colWidth, cardHeight);
-    if (m_delegate) {
+    if (m_delegate && m_delegate->cardSize() != cellSize) {
         m_delegate->setCardSize(cellSize);
     }
-    setGridSize(cellSize);
+    if (gridSize() != cellSize) {
+        setGridSize(cellSize);
+    }
 }
 
 void FeedView::resizeEvent(QResizeEvent *event) {

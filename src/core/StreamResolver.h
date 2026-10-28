@@ -30,6 +30,9 @@ public:
     static void pruneExpired();
 
     // Cleanly cancel pending background prefetches and join worker threads
+    static void shutdownPrefetch();
+
+    // Cleanly cancel pending background prefetches and join worker threads (full shutdown)
     static void shutdown();
 
     // Locate yt-dlp executable on the system (executable dir, build folder, PATH, Winget)
@@ -73,3 +76,7 @@ public:
     buildYtDlpArgs(const std::string &ytdlpPath, const std::string &url, const std::string &format, bool useCookies,
                    std::string_view cookieFilePath, std::string_view extractorArgs, std::string_view formatSort = "");
 };
+
+namespace lightyt {
+using ::StreamResolver;
+}

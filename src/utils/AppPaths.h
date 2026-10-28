@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -27,6 +28,14 @@ bool ensureDirExists(const std::filesystem::path &dir);
 
 // Returns list of local/bundled candidate paths for a filename (exeDir/lib, parent/lib, lib, exeDir)
 [[nodiscard]] std::vector<std::filesystem::path> getLocalCandidatePaths(std::string_view filename);
+
+// Checks that `p` exists, is a regular file (or symlink to one), and on Windows is >= minWinSizeBytes.
+[[nodiscard]] bool isValidBinary(const std::filesystem::path &p, std::uintmax_t minWinSizeBytes = 0);
+
+// Scans %LOCALAPPDATA%\Microsoft\WinGet\Packages\<packageSubstring>* recursively for `fileName`.
+[[nodiscard]] std::filesystem::path findWinGetPackageBinary(std::string_view packageSubstring,
+                                                            std::string_view fileName,
+                                                            std::uintmax_t minWinSizeBytes = 1024 * 1024);
 
 // Searches local candidate paths and optional fallback paths for an existing regular file
 [[nodiscard]] std::filesystem::path findCandidateFile(std::string_view filename,

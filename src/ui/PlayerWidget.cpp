@@ -35,12 +35,44 @@
 #include <QTime>
 #include <QTimer>
 #include <QVBoxLayout>
-#include <QtConcurrent>
+#include <QThreadPool>
 #include <algorithm>
 #include <charconv>
-#include <thread>
+#include <shared_mutex>
 
 namespace {
+
+static QString buildSegmentedPillStyle(bool isLeftPill, bool isActive) {
+    const char *radii = isLeftPill
+        ? "border-top-left-radius: 18px; border-bottom-left-radius: 18px; border-top-right-radius: 0px; border-bottom-right-radius: 0px;"
+        : "border-top-left-radius: 0px; border-bottom-left-radius: 0px; border-top-right-radius: 18px; border-bottom-right-radius: 18px;";
+    if (isActive) {
+        return QString(
+            "QPushButton {"
+            "  background-color: #f1f1f1; color: #0f0f0f; font-weight: 600; font-size: 13px;"
+            "  border: 1px solid transparent; %1 min-height: 34px; max-height: 34px; padding: 0px 14px; outline: none;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: #d9d9d9; border: 1px solid transparent; %1 outline: none;"
+            "}"
+            "QPushButton:pressed, QPushButton:hover:pressed {"
+            "  background-color: #cccccc; border: 1px solid transparent; %1 outline: none;"
+            "}"
+            "QPushButton:focus { outline: none; border: 1px solid transparent; }").arg(radii);
+    }
+    return QString(
+        "QPushButton {"
+        "  background-color: transparent; color: #f1f1f1; font-weight: 600; font-size: 13px;"
+        "  border: 1px solid transparent; %1 min-height: 34px; max-height: 34px; padding: 0px 14px; outline: none;"
+        "}"
+        "QPushButton:hover {"
+        "  background-color: #3f3f3f; border: 1px solid transparent; %1 outline: none;"
+        "}"
+        "QPushButton:pressed, QPushButton:hover:pressed {"
+        "  background-color: #525252; border: 1px solid transparent; %1 outline: none;"
+        "}"
+        "QPushButton:focus { outline: none; border: 1px solid transparent; }").arg(radii);
+}
 
 const char *kPillBtnSecondaryQss = "QPushButton {"
                                    "  background-color: #272727;"
@@ -98,31 +130,38 @@ const char *kSubscribePrimaryQss = "QPushButton {"
 
 PlayerWidget::PlayerWidget(QWidget *parent) : QWidget(parent), m_player(std::make_unique<PlayerController>()) {
     setFocusPolicy(Qt::StrongFocus);
+    m_asyncGuard->client = m_client;
     setupUi();
     setupEvents();
 }
 
 PlayerWidget::~PlayerWidget() {
-    m_destroying.store(true);
-    if (m_cancelToken) {
-        m_cancelToken->store(true);
+    // 1. Signal cancellation across all scopes
+    m_lifetimeCancel->store(true, std::memory_order_relaxed);
+    if (m_resolveCancel) {
+        m_resolveCancel->store(true, std::memory_order_relaxed);
     }
+    if (m_metadataCancel) {
+        m_metadataCancel->store(true, std::memory_order_relaxed);
+    }
+
+    // 2. Safely detach YouTubeClient from all async tasks under unique lock
+    {
+        std::unique_lock<std::shared_mutex> lock(m_asyncGuard->mutex);
+        m_asyncGuard->client = nullptr;
+        m_client = nullptr;
+    }
+
+    // 3. Destroy render context and detach player events
     if (m_videoSurface) {
         m_videoSurface->destroyRenderContext();
     }
     if (m_player) {
         m_player->setEvents({});
     }
+
+    // 4. Stop playback without any thread joins
     stopPlayback();
-    if (m_workerThread.joinable()) {
-        m_workerThread.join();
-    }
-    if (m_metadataThread.joinable()) {
-        m_metadataThread.join();
-    }
-    if (m_avatarThread.joinable()) {
-        m_avatarThread.join();
-    }
 }
 
 void PlayerWidget::setupUi() {
@@ -392,36 +431,26 @@ void PlayerWidget::setupUi() {
             StreamResolver::prefetch(item.id, m_quality.toStdString(), m_cookieFilePath, m_allowAv1);
         }
     });
-    connect(m_recommendationsView, &FeedView::requestMoreVideos, this, [this]() {
-        if (m_nextContinuationToken.empty() || !m_client)
+    // Channel avatar signal connection
+    connect(&ThumbnailLoader::instance(), &ThumbnailLoader::avatarReady, this,
+            [this](const std::string &url, int size, const QPixmap &pixmap) {
+                if (size == 40 && url == m_channelAvatarUrl && !pixmap.isNull()) {
+                    setChannelAvatarPixmap(pixmap);
+                }
+            });
+
+    // WatchNext recommendations pagination triggers
+    connect(m_recommendationsView, &FeedView::requestMoreVideos, this,
+            &PlayerWidget::onRecommendationsScrollRequested);
+    connect(m_scrollArea->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
+        if (m_isFullscreen) {
             return;
-        std::string token = m_nextContinuationToken;
-        m_nextContinuationToken.clear();
-        auto *client = m_client;
-        QPointer<PlayerWidget> weakThis(this);
-        uint64_t currentGen = m_generation.load();
-        auto cancel = m_cancelToken;
-        (void)QtConcurrent::run([weakThis, client, token, currentGen, cancel]() {
-            std::string err;
-            auto feedRes = client->fetchContinuation(token, err, ContinuationKind::WatchNext);
-            if (!feedRes.videos.empty() && (!cancel || !cancel->load())) {
-                QMetaObject::invokeMethod(
-                    qApp,
-                    [weakThis, feedRes, currentGen, cancel]() {
-                        if (!weakThis || (cancel && cancel->load()) ||
-                            currentGen != weakThis->m_generation.load())
-                            return;
-                        weakThis->m_nextContinuationToken = feedRes.continuationToken;
-                        for (const auto &v : feedRes.videos) {
-                            weakThis->m_relatedVideos.push_back(v);
-                        }
-                        if (weakThis->m_recommendationsView) {
-                            weakThis->m_recommendationsView->appendVideos(feedRes.videos);
-                        }
-                    },
-                    Qt::QueuedConnection);
-            }
-        });
+        }
+        QScrollBar *sb = m_scrollArea->verticalScrollBar();
+        int maxVal = sb->maximum();
+        if (maxVal > 0 && value >= (maxVal * 85) / 100) {
+            onRecommendationsScrollRequested();
+        }
     });
 
     m_isTheaterMode = AppSettings::instance().getTheaterMode();
@@ -563,23 +592,19 @@ void PlayerWidget::playVideo(const VideoItem &item, const QString &quality, cons
         m_player->stop();
     }
 
-    if (m_cancelToken) {
-        m_cancelToken->store(true);
+    if (m_resolveCancel) {
+        m_resolveCancel->store(true, std::memory_order_relaxed);
     }
-    if (m_workerThread.joinable()) {
-        m_workerThread.detach();
-    }
-    if (m_metadataThread.joinable()) {
-        m_metadataThread.detach();
-    }
-    if (m_avatarThread.joinable()) {
-        m_avatarThread.detach();
+    if (m_metadataCancel) {
+        m_metadataCancel->store(true, std::memory_order_relaxed);
     }
 
-    // Create fresh cancellation token and increment generation before launching avatar or stream workers
-    m_cancelToken = std::make_shared<std::atomic<bool>>(false);
-    auto cancel = m_cancelToken;
+    m_resolveCancel = std::make_shared<std::atomic<bool>>(false);
+    m_metadataCancel = std::make_shared<std::atomic<bool>>(false);
+    auto resolveCancel = m_resolveCancel;
+    auto metadataCancel = m_metadataCancel;
     uint64_t currentGen = ++m_generation;
+    m_isLoadingRecommendations = false;
 
     m_currentItem = item;
     m_cookieFilePath = cookieFilePath;
@@ -629,7 +654,7 @@ void PlayerWidget::playVideo(const VideoItem &item, const QString &quality, cons
         initial = QString::fromUtf8(item.author.c_str()).left(1).toUpper();
     }
     if (m_channelAvatarLabel) {
-        m_loadedAvatarUrl.clear();
+        m_channelAvatarUrl.clear();
         m_channelAvatarLabel->setPixmap(QPixmap());
         m_channelAvatarLabel->setText(initial);
         m_channelAvatarLabel->setFixedSize(40, 40);
@@ -713,101 +738,119 @@ void PlayerWidget::playVideo(const VideoItem &item, const QString &quality, cons
     std::string videoId = item.id;
     std::string cookies = m_cookieFilePath;
 
-    QPointer<PlayerWidget> weakThis(this);
-    auto client = m_client;
+    QPointer<PlayerWidget> self(this);
+    auto guard = m_asyncGuard;
+
     // 1. Immediately fetch watch metadata via InnerTube /next concurrently in background
-    m_metadataThread = std::thread([weakThis, client, videoId, currentGen, cancel, q, cookies, allowAv1]() {
+    QThreadPool::globalInstance()->start([self, guard, metadataCancel, videoId, currentGen, q, cookies, allowAv1]() {
         WatchMetadata nextMeta;
-        if (client) {
-            nextMeta = client->fetchWatchMetadata(videoId, cancel.get());
-        } else {
-            nextMeta = YouTubeClient::fetchWatchMetadataDirect(videoId, cancel.get());
+        {
+            std::shared_lock<std::shared_mutex> clientLock(guard->mutex);
+            if (metadataCancel->load()) {
+                return;
+            }
+            if (guard->client) {
+                nextMeta = guard->client->fetchWatchMetadata(videoId, metadataCancel.get());
+            } else {
+                clientLock.unlock();
+                nextMeta = YouTubeClient::fetchWatchMetadataDirect(videoId, metadataCancel.get());
+            }
         }
 
-        if (!cancel || !cancel->load()) {
+        if (!metadataCancel->load()) {
             std::string nextId = !nextMeta.autoplayVideoId.empty()
                                      ? nextMeta.autoplayVideoId
                                      : (!nextMeta.relatedVideos.empty() ? nextMeta.relatedVideos.front().id : "");
-            if (weakThis && weakThis->m_isAutoplay.load() && !nextId.empty() && nextId != videoId) {
+            if (self && self->m_isAutoplay.load() && !nextId.empty() && nextId != videoId) {
                 StreamResolver::prefetch(nextId, q, cookies, allowAv1);
             }
 
             QMetaObject::invokeMethod(
                 qApp,
-                [weakThis, nextMeta, currentGen, cancel]() {
-                    if (!weakThis || (cancel && cancel->load()) ||
-                        currentGen != weakThis->m_generation.load(std::memory_order_relaxed))
+                [self, nextMeta, currentGen, metadataCancel]() {
+                    if (!self || metadataCancel->load() ||
+                        currentGen != self->m_generation.load(std::memory_order_relaxed)) {
                         return;
-
-                    weakThis->m_autoplayVideoId = nextMeta.autoplayVideoId;
-                    weakThis->m_relatedVideos = nextMeta.relatedVideos;
-                    weakThis->m_nextContinuationToken = nextMeta.continuationToken;
-
-                    if (weakThis->m_recommendationsView) {
-                        weakThis->m_recommendationsView->setVideos(nextMeta.relatedVideos);
                     }
 
-                    if (!nextMeta.author.empty() && weakThis->m_authorLabel) {
-                        weakThis->m_authorLabel->setText(QString::fromUtf8(nextMeta.author.c_str()));
+                    self->m_autoplayVideoId = nextMeta.autoplayVideoId;
+                    self->m_relatedVideos = nextMeta.relatedVideos;
+                    self->m_nextContinuationToken = nextMeta.continuationToken;
+
+                    if (self->m_recommendationsView) {
+                        self->m_recommendationsView->setVideos(nextMeta.relatedVideos);
+                    }
+
+                    if (!nextMeta.author.empty() && self->m_authorLabel) {
+                        self->m_authorLabel->setText(QString::fromUtf8(nextMeta.author.c_str()));
                     }
                     if (!nextMeta.channelAvatarUrl.empty()) {
-                        weakThis->m_currentItem.channelAvatarUrl = nextMeta.channelAvatarUrl;
-                        weakThis->loadChannelAvatar(nextMeta.channelAvatarUrl);
+                        self->m_currentItem.channelAvatarUrl = nextMeta.channelAvatarUrl;
+                        self->loadChannelAvatar(nextMeta.channelAvatarUrl);
                     }
-                    if (!nextMeta.subscriberCount.empty() && weakThis->m_subscriberCountLabel) {
-                        weakThis->m_subscriberCountLabel->setText(QString::fromUtf8(nextMeta.subscriberCount.c_str()));
+                    if (!nextMeta.subscriberCount.empty() && self->m_subscriberCountLabel) {
+                        self->m_subscriberCountLabel->setText(QString::fromUtf8(nextMeta.subscriberCount.c_str()));
                     }
                     if (!nextMeta.channelId.empty()) {
-                        weakThis->m_currentItem.channelId = nextMeta.channelId;
+                        self->m_currentItem.channelId = nextMeta.channelId;
                     }
                     if (nextMeta.likeCount > 0) {
-                        weakThis->m_baseLikes = nextMeta.likeCount;
+                        self->m_baseLikes = nextMeta.likeCount;
                     }
                     if (nextMeta.isLiked) {
-                        weakThis->m_isLiked = true;
-                        weakThis->m_initialLiked = true;
-                        weakThis->m_isDisliked = false;
-                        weakThis->m_initialDisliked = false;
+                        self->m_isLiked = true;
+                        self->m_initialLiked = true;
+                        self->m_isDisliked = false;
+                        self->m_initialDisliked = false;
                     } else if (nextMeta.isDisliked) {
-                        weakThis->m_isDisliked = true;
-                        weakThis->m_initialDisliked = true;
-                        weakThis->m_isLiked = false;
-                        weakThis->m_initialLiked = false;
+                        self->m_isDisliked = true;
+                        self->m_initialDisliked = true;
+                        self->m_isLiked = false;
+                        self->m_initialLiked = false;
                     }
-                    weakThis->updateLikeDislikeUi();
-                    if (nextMeta.isSubscribed && weakThis->m_subscribeBtn) {
-                        weakThis->m_isSubscribed = true;
-                        weakThis->m_subscribeBtn->setText("Subscribed");
-                        weakThis->m_subscribeBtn->setStyleSheet(kPillBtnSecondaryQss);
+                    self->updateLikeDislikeUi();
+                    if (nextMeta.isSubscribed && self->m_subscribeBtn) {
+                        self->m_isSubscribed = true;
+                        self->m_subscribeBtn->setText("Subscribed");
+                        self->m_subscribeBtn->setStyleSheet(kPillBtnSecondaryQss);
                     }
-                    if (!nextMeta.description.empty() && (weakThis->m_fullDescription.empty() ||
-                                                          weakThis->m_fullDescription == "No description provided.")) {
-                        weakThis->m_fullDescription = nextMeta.description;
-                        weakThis->updateDescriptionUi();
+                    if (!nextMeta.description.empty() && (self->m_fullDescription.empty() ||
+                                                          self->m_fullDescription == "No description provided.")) {
+                        self->m_fullDescription = nextMeta.description;
+                        self->updateDescriptionUi();
                     }
                 },
                 Qt::QueuedConnection);
         }
 
         std::vector<std::string> qualities;
-        if (client) {
-            qualities = client->fetchAvailableQualities(videoId, cancel.get());
-        } else {
-            qualities = YouTubeClient::fetchAvailableQualitiesDirect(videoId, cancel.get());
+        {
+            std::shared_lock<std::shared_mutex> clientLock(guard->mutex);
+            if (metadataCancel->load()) {
+                return;
+            }
+            if (guard->client) {
+                qualities = guard->client->fetchAvailableQualities(videoId, metadataCancel.get());
+            } else {
+                clientLock.unlock();
+                qualities = YouTubeClient::fetchAvailableQualitiesDirect(videoId, metadataCancel.get());
+            }
         }
-        if (!qualities.empty() && (!cancel || !cancel->load())) {
+
+        if (!qualities.empty() && !metadataCancel->load()) {
             QStringList qList;
             for (const auto &str : qualities) {
                 qList.append(QString::fromUtf8(str.c_str()));
             }
             QMetaObject::invokeMethod(
                 qApp,
-                [weakThis, qList, currentGen, cancel]() {
-                    if (!weakThis || (cancel && cancel->load()) ||
-                        currentGen != weakThis->m_generation.load(std::memory_order_relaxed))
+                [self, qList, currentGen, metadataCancel]() {
+                    if (!self || metadataCancel->load() ||
+                        currentGen != self->m_generation.load(std::memory_order_relaxed)) {
                         return;
-                    if (weakThis->m_controlsOverlay) {
-                        weakThis->m_controlsOverlay->setAvailableQualities(qList);
+                    }
+                    if (self->m_controlsOverlay) {
+                        self->m_controlsOverlay->setAvailableQualities(qList);
                     }
                 },
                 Qt::QueuedConnection);
@@ -815,34 +858,36 @@ void PlayerWidget::playVideo(const VideoItem &item, const QString &quality, cons
     });
 
     // 2. Resolve stream using yt-dlp concurrently (hits memory cache instantly without waiting for /next)
-    m_workerThread = std::thread([weakThis, videoId, q, cookies, allowAv1, currentGen, cancel]() {
+    QThreadPool::globalInstance()->start([self, videoId, q, cookies, allowAv1, currentGen, resolveCancel]() {
         StreamInfo info;
         std::string err;
-        bool ok = StreamResolver::resolve(videoId, q, info, err, cookies, allowAv1, cancel.get());
+        bool ok = StreamResolver::resolve(videoId, q, info, err, cookies, allowAv1, resolveCancel.get());
 
-        if (cancel && cancel->load())
+        if (resolveCancel->load()) {
             return;
+        }
+
         QMetaObject::invokeMethod(
             qApp,
-            [weakThis, ok, info, err, currentGen, cancel]() {
-                if (!weakThis || (cancel && cancel->load()) ||
-                    currentGen != weakThis->m_generation.load(std::memory_order_relaxed)) {
+            [self, ok, info, err, currentGen, resolveCancel]() {
+                if (!self || resolveCancel->load() ||
+                    currentGen != self->m_generation.load(std::memory_order_relaxed)) {
                     // Resolution completed for a video the user already left
                     return;
                 }
 
                 if (!ok || info.videoUrl.empty()) {
-                    weakThis->m_errorBanner->setText(
+                    self->m_errorBanner->setText(
                         QString::fromUtf8(err.empty() ? "Failed to resolve stream." : err.c_str()));
-                    weakThis->m_errorBanner->show();
+                    self->m_errorBanner->show();
                     return;
                 }
 
-                weakThis->m_currentVideoItag = info.videoItag;
-                weakThis->m_currentAudioItag = info.audioItag;
-                weakThis->updateStatsContext();
-                weakThis->m_player->setVolume(AppSettings::instance().getVolume());
-                weakThis->m_player->playDirectStream(info.videoUrl, info.audioUrl);
+                self->m_currentVideoItag = info.videoItag;
+                self->m_currentAudioItag = info.audioItag;
+                self->updateStatsContext();
+                self->m_player->setVolume(AppSettings::instance().getVolume());
+                self->m_player->playDirectStream(info.videoUrl, info.audioUrl);
             },
             Qt::QueuedConnection);
     });
@@ -861,8 +906,11 @@ void PlayerWidget::setPlaybackSpeed(double speed) {
 
 void PlayerWidget::stopPlayback() {
     m_generation.fetch_add(1, std::memory_order_relaxed);
-    if (m_cancelToken) {
-        m_cancelToken->store(true);
+    if (m_resolveCancel) {
+        m_resolveCancel->store(true, std::memory_order_relaxed);
+    }
+    if (m_metadataCancel) {
+        m_metadataCancel->store(true, std::memory_order_relaxed);
     }
     if (m_client && !m_currentItem.id.empty() && m_player && m_player->getPosition() > 1.0) {
         double curPos = m_player->getPosition();
@@ -880,20 +928,6 @@ void PlayerWidget::stopPlayback() {
         m_controlsOverlay->setPosition(0.0);
         m_controlsOverlay->setBufferedPosition(0.0);
         m_controlsOverlay->showControlsAnimated();
-    }
-    if (m_cancelToken) {
-        m_cancelToken->store(true);
-    }
-    if (!m_destroying.load()) {
-        if (m_workerThread.joinable()) {
-            m_workerThread.detach();
-        }
-        if (m_metadataThread.joinable()) {
-            m_metadataThread.detach();
-        }
-        if (m_avatarThread.joinable()) {
-            m_avatarThread.detach();
-        }
     }
 }
 
@@ -1002,15 +1036,11 @@ void PlayerWidget::onQualityChanged(const QString &quality) {
             return;
         }
         double currentPos = m_player->getPosition();
-        if (m_cancelToken) {
-            m_cancelToken->store(true);
+        if (m_resolveCancel) {
+            m_resolveCancel->store(true, std::memory_order_relaxed);
         }
-        if (m_workerThread.joinable()) {
-            m_workerThread.detach();
-        }
-
-        m_cancelToken = std::make_shared<std::atomic<bool>>(false);
-        auto cancel = m_cancelToken;
+        auto resolveCancel = std::make_shared<std::atomic<bool>>(false);
+        m_resolveCancel = resolveCancel;
         uint64_t currentGen = ++m_generation;
 
         std::string qStr = quality.toUtf8().constData();
@@ -1018,31 +1048,31 @@ void PlayerWidget::onQualityChanged(const QString &quality) {
         std::string cookies = m_cookieFilePath;
         bool allowAv1 = m_allowAv1;
 
-        QPointer<PlayerWidget> weakThis(this);
-        m_workerThread = std::thread([weakThis, videoId, qStr, cookies, allowAv1, currentPos, currentGen, cancel]() {
+        QPointer<PlayerWidget> self(this);
+        QThreadPool::globalInstance()->start([self, videoId, qStr, cookies, allowAv1, currentPos, currentGen, resolveCancel]() {
             StreamInfo info;
             std::string err;
-            bool ok = StreamResolver::resolve(videoId, qStr, info, err, cookies, allowAv1, cancel.get());
+            bool ok = StreamResolver::resolve(videoId, qStr, info, err, cookies, allowAv1, resolveCancel.get());
 
-            if (cancel && cancel->load())
+            if (resolveCancel->load())
                 return;
             QMetaObject::invokeMethod(
                 qApp,
-                [weakThis, ok, info, err, currentGen, currentPos, cancel]() {
-                    if (!weakThis || (cancel && cancel->load()) ||
-                        currentGen != weakThis->m_generation.load(std::memory_order_relaxed))
+                [self, ok, info, err, currentGen, currentPos, resolveCancel]() {
+                    if (!self || resolveCancel->load() ||
+                        currentGen != self->m_generation.load(std::memory_order_relaxed))
                         return;
                     if (!ok || info.videoUrl.empty()) {
                         LOG_WARN("[PlayerWidget] Failed to switch quality: {}", err);
-                        weakThis->m_errorBanner->setText(
+                        self->m_errorBanner->setText(
                             QString::fromUtf8(err.empty() ? "Failed to switch quality." : err.c_str()));
-                        weakThis->m_errorBanner->show();
+                        self->m_errorBanner->show();
                         return;
                     }
-                    weakThis->m_currentVideoItag = info.videoItag;
-                    weakThis->m_currentAudioItag = info.audioItag;
-                    weakThis->updateStatsContext();
-                    weakThis->m_player->playDirectStream(info.videoUrl, info.audioUrl, currentPos);
+                    self->m_currentVideoItag = info.videoItag;
+                    self->m_currentAudioItag = info.audioItag;
+                    self->updateStatsContext();
+                    self->m_player->playDirectStream(info.videoUrl, info.audioUrl, currentPos);
                 },
                 Qt::QueuedConnection);
         });
@@ -1177,18 +1207,6 @@ void PlayerWidget::keyPressEvent(QKeyEvent *event) {
         toggleStatsForNerds();
         event->accept();
         break;
-    case Qt::Key_T:
-        toggleTheaterMode();
-        event->accept();
-        break;
-    case Qt::Key_N:
-        if (event->modifiers() & Qt::ShiftModifier) {
-            playNextVideo();
-            event->accept();
-            break;
-        }
-        QWidget::keyPressEvent(event);
-        break;
     case Qt::Key_Greater:
         onPlaybackSpeedChanged(std::min(2.0, m_playbackSpeed + 0.25));
         event->accept();
@@ -1254,20 +1272,6 @@ void PlayerWidget::updatePlayerLayout() {
         m_controlsOverlay->setGeometry(0, containerH - kOverlayHeight, containerW, kOverlayHeight);
         m_controlsOverlay->raise();
     }
-}
-
-QString PlayerWidget::formatTime(double seconds) {
-    if (seconds < 0.0)
-        seconds = 0.0;
-    int totalSec = static_cast<int>(seconds);
-    int sec = totalSec % 60;
-    int min = (totalSec / 60) % 60;
-    int hr = totalSec / 3600;
-
-    if (hr > 0) {
-        return QString::asprintf("%02d:%02d:%02d", hr, min, sec);
-    }
-    return QString::asprintf("%02d:%02d", min, sec);
 }
 
 void PlayerWidget::setFullscreen(bool fullscreen) {
@@ -1472,14 +1476,18 @@ void PlayerWidget::onLikeClicked() {
 
     if (m_client && !m_currentItem.id.empty()) {
         std::string videoId = m_currentItem.id;
-        auto *client = m_client;
-        const std::atomic<bool> *cancelPtr = &m_destroying;
-        (void)QtConcurrent::run([client, videoId, sendLike, sendRemove, cancelPtr]() {
+        auto guard = m_asyncGuard;
+        auto cancelToken = m_lifetimeCancel;
+        QThreadPool::globalInstance()->start([guard, cancelToken, videoId, sendLike, sendRemove]() {
+            std::shared_lock<std::shared_mutex> clientLock(guard->mutex);
+            if (!guard->client || cancelToken->load()) {
+                return;
+            }
             std::string err;
             if (sendRemove) {
-                (void)client->removeLike(videoId, err, cancelPtr);
+                (void)guard->client->removeLike(videoId, err, cancelToken.get());
             } else if (sendLike) {
-                (void)client->likeVideo(videoId, true, err, cancelPtr);
+                (void)guard->client->likeVideo(videoId, true, err, cancelToken.get());
             }
         });
     }
@@ -1500,14 +1508,18 @@ void PlayerWidget::onDislikeClicked() {
 
     if (m_client && !m_currentItem.id.empty()) {
         std::string videoId = m_currentItem.id;
-        auto *client = m_client;
-        const std::atomic<bool> *cancelPtr = &m_destroying;
-        (void)QtConcurrent::run([client, videoId, sendDislike, sendRemove, cancelPtr]() {
+        auto guard = m_asyncGuard;
+        auto cancelToken = m_lifetimeCancel;
+        QThreadPool::globalInstance()->start([guard, cancelToken, videoId, sendDislike, sendRemove]() {
+            std::shared_lock<std::shared_mutex> clientLock(guard->mutex);
+            if (!guard->client || cancelToken->load()) {
+                return;
+            }
             std::string err;
             if (sendRemove) {
-                (void)client->removeLike(videoId, err, cancelPtr);
+                (void)guard->client->removeLike(videoId, err, cancelToken.get());
             } else if (sendDislike) {
-                (void)client->likeVideo(videoId, false, err, cancelPtr);
+                (void)guard->client->likeVideo(videoId, false, err, cancelToken.get());
             }
         });
     }
@@ -1542,11 +1554,15 @@ void PlayerWidget::onSubscribeClicked() {
     if (m_client && !m_currentItem.channelId.empty()) {
         std::string channelId = m_currentItem.channelId;
         bool sub = m_isSubscribed;
-        auto *client = m_client;
-        const std::atomic<bool> *cancelPtr = &m_destroying;
-        (void)QtConcurrent::run([client, channelId, sub, cancelPtr]() {
+        auto guard = m_asyncGuard;
+        auto cancelToken = m_lifetimeCancel;
+        QThreadPool::globalInstance()->start([guard, cancelToken, channelId, sub]() {
+            std::shared_lock<std::shared_mutex> clientLock(guard->mutex);
+            if (!guard->client || cancelToken->load()) {
+                return;
+            }
             std::string err;
-            (void)client->subscribeChannel(channelId, sub, err, cancelPtr);
+            (void)guard->client->subscribeChannel(channelId, sub, err, cancelToken.get());
         });
     }
 }
@@ -1566,104 +1582,17 @@ void PlayerWidget::updateLikeDislikeUi() {
 
     if (m_isLiked) {
         m_likeBtn->setIcon(lightyt::ui::icons::thumbUp(16, QColor(0x0f, 0x0f, 0x0f), true));
-        m_likeBtn->setStyleSheet("QPushButton {"
-                                 "  background-color: #f1f1f1; color: #0f0f0f; font-weight: 600; font-size: 13px;"
-                                 "  border: 1px solid transparent;"
-                                 "  border-top-left-radius: 18px; border-bottom-left-radius: 18px;"
-                                 "  border-top-right-radius: 0px; border-bottom-right-radius: 0px;"
-                                 "  min-height: 34px; max-height: 34px; padding: 0px 14px; outline: none;"
-                                 "}"
-                                 "QPushButton:hover {"
-                                 "  background-color: #d9d9d9;"
-                                 "  border: 1px solid transparent;"
-                                 "  border-top-left-radius: 18px; border-bottom-left-radius: 18px;"
-                                 "  border-top-right-radius: 0px; border-bottom-right-radius: 0px;"
-                                 "  outline: none;"
-                                 "}"
-                                 "QPushButton:pressed, QPushButton:hover:pressed {"
-                                 "  background-color: #cccccc;"
-                                 "  border: 1px solid transparent;"
-                                 "  border-top-left-radius: 18px; border-bottom-left-radius: 18px;"
-                                 "  border-top-right-radius: 0px; border-bottom-right-radius: 0px;"
-                                 "  outline: none;"
-                                 "}"
-                                 "QPushButton:focus { outline: none; border: 1px solid transparent; }");
     } else {
         m_likeBtn->setIcon(lightyt::ui::icons::thumbUp(16, QColor(0xf1, 0xf1, 0xf1), false));
-        m_likeBtn->setStyleSheet("QPushButton {"
-                                 "  background-color: transparent; color: #f1f1f1; font-weight: 600; font-size: 13px;"
-                                 "  border: 1px solid transparent;"
-                                 "  border-top-left-radius: 18px; border-bottom-left-radius: 18px;"
-                                 "  border-top-right-radius: 0px; border-bottom-right-radius: 0px;"
-                                 "  min-height: 34px; max-height: 34px; padding: 0px 14px; outline: none;"
-                                 "}"
-                                 "QPushButton:hover {"
-                                 "  background-color: #3f3f3f;"
-                                 "  border: 1px solid transparent;"
-                                 "  border-top-left-radius: 18px; border-bottom-left-radius: 18px;"
-                                 "  border-top-right-radius: 0px; border-bottom-right-radius: 0px;"
-                                 "  outline: none;"
-                                 "}"
-                                 "QPushButton:pressed, QPushButton:hover:pressed {"
-                                 "  background-color: #525252;"
-                                 "  border: 1px solid transparent;"
-                                 "  border-top-left-radius: 18px; border-bottom-left-radius: 18px;"
-                                 "  border-top-right-radius: 0px; border-bottom-right-radius: 0px;"
-                                 "  outline: none;"
-                                 "}"
-                                 "QPushButton:focus { outline: none; border: 1px solid transparent; }");
     }
+    m_likeBtn->setStyleSheet(buildSegmentedPillStyle(true, m_isLiked));
 
     if (m_isDisliked) {
         m_dislikeBtn->setIcon(lightyt::ui::icons::thumbDown(16, QColor(0x0f, 0x0f, 0x0f), true));
-        m_dislikeBtn->setStyleSheet("QPushButton {"
-                                    "  background-color: #f1f1f1; color: #0f0f0f; font-weight: 600; font-size: 13px;"
-                                    "  border: 1px solid transparent;"
-                                    "  border-top-left-radius: 0px; border-bottom-left-radius: 0px;"
-                                    "  border-top-right-radius: 18px; border-bottom-right-radius: 18px;"
-                                    "  min-height: 34px; max-height: 34px; padding: 0px 14px; outline: none;"
-                                    "}"
-                                    "QPushButton:hover {"
-                                    "  background-color: #d9d9d9;"
-                                    "  border: 1px solid transparent;"
-                                    "  border-top-left-radius: 0px; border-bottom-left-radius: 0px;"
-                                    "  border-top-right-radius: 18px; border-bottom-right-radius: 18px;"
-                                    "  outline: none;"
-                                    "}"
-                                    "QPushButton:pressed, QPushButton:hover:pressed {"
-                                    "  background-color: #cccccc;"
-                                    "  border: 1px solid transparent;"
-                                    "  border-top-left-radius: 0px; border-bottom-left-radius: 0px;"
-                                    "  border-top-right-radius: 18px; border-bottom-right-radius: 18px;"
-                                    "  outline: none;"
-                                    "}"
-                                    "QPushButton:focus { outline: none; border: 1px solid transparent; }");
     } else {
         m_dislikeBtn->setIcon(lightyt::ui::icons::thumbDown(16, QColor(0xf1, 0xf1, 0xf1), false));
-        m_dislikeBtn->setStyleSheet(
-            "QPushButton {"
-            "  background-color: transparent; color: #f1f1f1; font-weight: 600; font-size: 13px;"
-            "  border: 1px solid transparent;"
-            "  border-top-left-radius: 0px; border-bottom-left-radius: 0px;"
-            "  border-top-right-radius: 18px; border-bottom-right-radius: 18px;"
-            "  min-height: 34px; max-height: 34px; padding: 0px 14px; outline: none;"
-            "}"
-            "QPushButton:hover {"
-            "  background-color: #3f3f3f;"
-            "  border: 1px solid transparent;"
-            "  border-top-left-radius: 0px; border-bottom-left-radius: 0px;"
-            "  border-top-right-radius: 18px; border-bottom-right-radius: 18px;"
-            "  outline: none;"
-            "}"
-            "QPushButton:pressed, QPushButton:hover:pressed {"
-            "  background-color: #525252;"
-            "  border: 1px solid transparent;"
-            "  border-top-left-radius: 0px; border-bottom-left-radius: 0px;"
-            "  border-top-right-radius: 18px; border-bottom-right-radius: 18px;"
-            "  outline: none;"
-            "}"
-            "QPushButton:focus { outline: none; border: 1px solid transparent; }");
     }
+    m_dislikeBtn->setStyleSheet(buildSegmentedPillStyle(false, m_isDisliked));
 }
 
 void PlayerWidget::updateDescriptionUi() {
@@ -1740,7 +1669,7 @@ void PlayerWidget::setChannelAvatarPixmap(const QPixmap &pix) {
 
 void PlayerWidget::loadChannelAvatar(const std::string &avatarUrl) {
     if (avatarUrl.empty()) {
-        m_loadedAvatarUrl.clear();
+        m_channelAvatarUrl.clear();
         if (m_channelAvatarLabel) {
             m_channelAvatarLabel->clear();
         }
@@ -1748,95 +1677,66 @@ void PlayerWidget::loadChannelAvatar(const std::string &avatarUrl) {
     }
 
     std::string url = lightyt::utils::normalizeAvatarUrl(avatarUrl, /*preferWebp=*/true);
-    if (url == m_loadedAvatarUrl && m_channelAvatarLabel && !m_channelAvatarLabel->pixmap().isNull()) {
+    m_channelAvatarUrl = url;
+
+    QPixmap cached = ThumbnailLoader::instance().requestAvatar(url, 40);
+    if (!cached.isNull()) {
+        setChannelAvatarPixmap(cached);
+    }
+}
+
+void PlayerWidget::onRecommendationsScrollRequested() {
+    if (m_isLoadingRecommendations || m_nextContinuationToken.empty() || !m_client) {
         return;
     }
-
-    QString qUrl = QString::fromUtf8(url.c_str());
-    if (QPixmap *cached = m_avatarCache.object(qUrl)) {
-        m_loadedAvatarUrl = url;
-        setChannelAvatarPixmap(*cached);
-        return;
-    }
-
-    if (m_avatarThread.joinable()) {
-        m_avatarThread.detach();
-    }
-
-    int size = (m_channelAvatarLabel && m_channelAvatarLabel->width() > 0) ? m_channelAvatarLabel->width() : 40;
+    m_isLoadingRecommendations = true;
+    std::string token = std::move(m_nextContinuationToken);
+    m_nextContinuationToken.clear();
     uint64_t currentGen = m_generation.load(std::memory_order_relaxed);
-    auto cancel = m_cancelToken;
-    QPointer<PlayerWidget> weakThis(this);
+    auto guard = m_asyncGuard;
+    auto cancelToken = m_metadataCancel ? m_metadataCancel : m_lifetimeCancel;
+    QPointer<PlayerWidget> self(this);
 
-    m_avatarThread = std::thread([weakThis, url, size, currentGen, cancel]() {
-        if (cancel && cancel->load())
-            return;
-
-        std::vector<uint8_t> buffer;
-        bool haveData = ThumbnailCache::instance().readDisk(url, buffer) && !buffer.empty();
-        if (!haveData) {
-            if (cancel && cancel->load())
-                return;
-            if (HttpClient::downloadBytes(url, buffer, 8, 5 * 1024 * 1024, cancel.get()) && !buffer.empty()) {
-                (void)ThumbnailCache::instance().writeDisk(url, buffer);
-                haveData = true;
-            }
-        }
-
-        if (!haveData || (cancel && cancel->load()))
-            return;
-
-        QImage dlImage = ThumbnailLoader::decodeImageFromBytes(buffer);
-        if (dlImage.isNull()) {
-            std::string jpegUrl = lightyt::utils::convertAvatarUrlToJpeg(url);
-            if (jpegUrl != url) {
-                std::vector<uint8_t> fallbackBuf;
-                if (HttpClient::downloadBytes(jpegUrl, fallbackBuf, 8, 5 * 1024 * 1024, cancel.get()) &&
-                    !fallbackBuf.empty()) {
-                    dlImage = ThumbnailLoader::decodeImageFromBytes(fallbackBuf);
-                    if (!dlImage.isNull()) {
-                        (void)ThumbnailCache::instance().writeDisk(url, fallbackBuf);
-                    }
-                }
-            }
-        }
-
-        if (dlImage.isNull()) {
-            LOG_WARN("[PlayerWidget] Failed to decode avatar image ({} bytes) from {}", buffer.size(), url);
-            return;
-        }
-
-        int renderSize = size * 2;
-        QImage circularImg(renderSize, renderSize, QImage::Format_ARGB32_Premultiplied);
-        circularImg.fill(Qt::transparent);
+    QThreadPool::globalInstance()->start([self, guard, token, currentGen, cancelToken]() {
+        FeedResult feedRes;
         {
-            QPainter painter(&circularImg);
-            painter.setRenderHint(QPainter::Antialiasing, true);
-            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-
-            QPainterPath clip;
-            clip.addEllipse(0, 0, renderSize, renderSize);
-            painter.setClipPath(clip);
-
-            QImage scaled =
-                dlImage.scaled(renderSize, renderSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-            int x = std::max(0, (scaled.width() - renderSize) / 2);
-            int y = std::max(0, (scaled.height() - renderSize) / 2);
-            painter.drawImage(0, 0, scaled.copy(x, y, renderSize, renderSize));
+            std::shared_lock<std::shared_mutex> lock(guard->mutex);
+            if (!guard->client || cancelToken->load()) {
+                if (self) {
+                    QMetaObject::invokeMethod(
+                        qApp,
+                        [self]() {
+                            if (self) {
+                                self->m_isLoadingRecommendations = false;
+                            }
+                        },
+                        Qt::QueuedConnection);
+                }
+                return;
+            }
+            std::string err;
+            feedRes = guard->client->fetchContinuation(token, err, ContinuationKind::WatchNext);
         }
-        circularImg.setDevicePixelRatio(2.0);
 
         QMetaObject::invokeMethod(
             qApp,
-            [weakThis, url, circularImg = std::move(circularImg), currentGen, cancel]() {
-                if (!weakThis || (cancel && cancel->load()) ||
-                    weakThis->m_generation.load(std::memory_order_relaxed) != currentGen) {
+            [self, feedRes = std::move(feedRes), currentGen, cancelToken]() {
+                if (!self) {
                     return;
                 }
-                QPixmap pix = QPixmap::fromImage(circularImg);
-                weakThis->m_avatarCache.insert(QString::fromUtf8(url.c_str()), new QPixmap(pix), 1);
-                weakThis->m_loadedAvatarUrl = url;
-                weakThis->setChannelAvatarPixmap(pix);
+                self->m_isLoadingRecommendations = false;
+                if (cancelToken->load() || currentGen != self->m_generation.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                self->m_nextContinuationToken = feedRes.continuationToken;
+                if (!feedRes.videos.empty()) {
+                    for (const auto &v : feedRes.videos) {
+                        self->m_relatedVideos.push_back(v);
+                    }
+                    if (self->m_recommendationsView) {
+                        self->m_recommendationsView->appendVideos(feedRes.videos);
+                    }
+                }
             },
             Qt::QueuedConnection);
     });

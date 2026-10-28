@@ -106,7 +106,9 @@ using lightyt::utils::startsWithIgnoreCase;
 using lightyt::utils::trim;
 
 bool isCompanionSessionCookie(std::string_view name) noexcept {
-    return name == "SIDCC" || name == "__Secure-1PSIDCC" || name == "__Secure-3PSIDCC" || name == "LOGIN_INFO" ||
+    return name == "SIDCC" || name == "__Secure-1PSIDCC" || name == "__Secure-3PSIDCC" ||
+           name == "__Secure-1PSIDTS" || name == "__Secure-3PSIDTS" || name == "__Secure-1PSIDRTS" ||
+           name == "__Secure-3PSIDRTS" || name == "LOGIN_INFO" ||
            name == "PREF" || name == "YSC" || name == "VISITOR_INFO1_LIVE";
 }
 
@@ -287,7 +289,7 @@ bool CookieManager::loadFromFile(const std::filesystem::path &filePath) {
     bool ok = loadFromString(content);
     if (ok) {
         std::unique_lock lock(m_mutex);
-        m_cookieFilePath = filePath.string();
+        m_cookieFilePath = lightyt::utils::pathToUtf8(filePath);
         m_dirty.store(false, std::memory_order_release);
     }
     return ok;
@@ -419,7 +421,8 @@ bool CookieManager::saveToFile(const std::filesystem::path &filePath) const {
         std::error_code dirEc;
         std::filesystem::create_directories(filePath.parent_path(), dirEc);
     }
-    auto tempPath = filePath.string() + ".tmp";
+    std::filesystem::path tempPath = filePath;
+    tempPath += ".tmp";
     std::ofstream file(tempPath, std::ios::trunc);
     if (!file.is_open()) {
         return false;
@@ -793,7 +796,7 @@ void CookieManager::autoSaveIfChanged() const {
         }
     }
     if (shouldSave && !path.empty()) {
-        if (!saveToFile(path)) {
+        if (!saveToFile(lightyt::utils::u8ToPath(path))) {
             m_dirty.store(true, std::memory_order_release);
         }
     }
@@ -823,6 +826,6 @@ bool CookieManager::saveToCanonicalAppData() {
     if (!saveToFile(targetPath)) {
         return false;
     }
-    setCookieFilePath(targetPath.string());
+    setCookieFilePath(lightyt::utils::pathToUtf8(targetPath));
     return true;
 }

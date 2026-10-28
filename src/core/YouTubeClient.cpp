@@ -370,6 +370,19 @@ FeedResult YouTubeClient::fetchFeedWithContinuation(std::string_view browseId, s
                     LOG_WARN("[YouTubeClient] InnerTube error: {}", errDetail);
                 }
             }
+            if (useAuth && parsed.contains("responseContext") && parsed["responseContext"].is_object()) {
+                const auto &rc = parsed["responseContext"];
+                if (rc.contains("mainAppWebResponseContext") && rc["mainAppWebResponseContext"].is_object() &&
+                    rc["mainAppWebResponseContext"].value("loggedOut", false)) {
+                    errorMessage =
+                        "Session cookies expired or logged out on YouTube. Please re-import fresh cookies.txt.";
+                    LOG_WARN("[YouTubeClient] {}", errorMessage);
+                }
+            }
+            if (false) {
+                if (false) {
+                }
+            }
         }
 
         // Fallback pipeline: for authenticated accounts when watch history is paused/empty

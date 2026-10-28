@@ -3,7 +3,6 @@
 #include "../core/VideoItem.h"
 #include "../player/PlayerController.h"
 
-#include <QCache>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QPointer>
@@ -14,9 +13,9 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 class YouTubeClient;
@@ -43,7 +42,11 @@ public:
 
     void stopPlayback();
 
-    void setYouTubeClient(YouTubeClient *client) noexcept { m_client = client; }
+    void setYouTubeClient(YouTubeClient *client) {
+        std::unique_lock<std::shared_mutex> lock(m_asyncGuard->mutex);
+        m_client = client;
+        m_asyncGuard->client = client;
+    }
 
     [[nodiscard]] int getVolume() const;
     void setVolume(int value);
@@ -63,7 +66,6 @@ public:
 signals:
     void backRequested();
     void fullscreenToggleRequested();
-    void theaterModeToggleRequested();
     void theaterModeToggled(bool isTheater);
 
 protected:
@@ -84,6 +86,7 @@ private slots:
     void onSubscribeClicked();
     void onToggleDescriptionClicked();
     void onAutoplayToggled(bool enabled);
+    void onRecommendationsScrollRequested();
 
 private:
     QWidget *m_surfaceContainer = nullptr;
@@ -123,14 +126,16 @@ private:
     double m_fallbackDuration = 0.0;
     std::chrono::steady_clock::time_point m_lastSeekTime{};
     std::atomic<uint64_t> m_generation{0};
-    std::atomic<bool> m_destroying{false};
-    std::shared_ptr<std::atomic<bool>> m_cancelToken;
-    std::thread m_workerThread;
-    std::thread m_metadataThread;
-    std::thread m_avatarThread;
-
-    QCache<QString, QPixmap> m_avatarCache{64};
-    std::string m_loadedAvatarUrl;
+    struct AsyncClientGuard {
+        std::shared_mutex mutex;
+        YouTubeClient *client = nullptr;
+    };
+    std::shared_ptr<AsyncClientGuard> m_asyncGuard = std::make_shared<AsyncClientGuard>();
+    std::shared_ptr<std::atomic<bool>> m_lifetimeCancel = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> m_resolveCancel;
+    std::shared_ptr<std::atomic<bool>> m_metadataCancel;
+    std::string m_channelAvatarUrl;
+    bool m_isLoadingRecommendations = false;
 
     VideoItem m_currentItem;
     std::string m_cookieFilePath;
@@ -163,6 +168,5 @@ private:
     void setChannelAvatarPixmap(const QPixmap &pix);
     [[nodiscard]] double effectiveDuration() const noexcept;
     [[nodiscard]] static double parseDurationString(std::string_view durStr) noexcept;
-    [[nodiscard]] static QString formatTime(double seconds);
     [[nodiscard]] static QString formatCount(int64_t count);
 };

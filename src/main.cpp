@@ -214,9 +214,9 @@ int main(int argc, char *argv[]) {
         MainWindow window;
         window.show();
 
-        int exitCode = app.exec();
-        StreamResolver::shutdown();
-        return exitCode;
+        const int ret = app.exec();
+        StreamResolver::shutdownPrefetch();
+        return ret;
     } catch (const std::exception &e) {
         LOG_ERROR("Startup Exception: {}", e.what());
         QMessageBox::critical(nullptr, "QTYT Fatal Error", QString("Startup Exception: %1").arg(e.what()));

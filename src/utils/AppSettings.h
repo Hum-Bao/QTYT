@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QSet>
 #include <QString>
 #include <mutex>
 
@@ -55,6 +56,12 @@ public:
     // Force flush in-memory changes to disk immediately
     void sync();
 
+    // Check if a specific setting exists in memory or persistent storage
+    [[nodiscard]] bool containsKey(const QString &key) const;
+
+    // Check if a specific setting has been explicitly saved to persistent disk storage
+    [[nodiscard]] bool hasPersistedKey(const QString &key) const;
+
 private:
     AppSettings();
     ~AppSettings();
@@ -80,4 +87,5 @@ private:
     QString m_logLevel = "warn";
 
     bool m_dirty = false;
+    QSet<QString> m_cachedDiskKeys;
 };
