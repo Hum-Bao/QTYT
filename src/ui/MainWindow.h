@@ -98,6 +98,7 @@ private:
     void updateAuthButtonUi();
     void updateNavTabs(NavTab tab);
     void loadHomeFeedAsync();
-    void loadFeedAsync(const std::string &browseId, const QString &modeName);
+    void loadHomeFeedAsync(bool switchToFeed);
+    void loadFeedAsync(const std::string &browseId, const QString &modeName, bool switchToFeed = true);
     void executeSearchAsync(const QString &query);
 };

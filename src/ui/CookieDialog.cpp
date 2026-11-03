@@ -394,12 +394,14 @@ void CookieDialog::setupUi() {
         m_pageIdEdit->setText(QString::fromUtf8(curPageId.c_str()));
         m_channelNameEdit->setText(QString::fromUtf8(curName.c_str()));
 
+        m_accountIndexCombo->blockSignals(true);
         for (int i = 0; i < m_accountIndexCombo->count(); ++i) {
             if (m_accountIndexCombo->itemData(i).toInt() == curAuthIdx) {
                 m_accountIndexCombo->setCurrentIndex(i);
                 break;
             }
         }
+        m_accountIndexCombo->blockSignals(false);
     }
 
     // Populate Preferences tab initial values
@@ -477,6 +479,7 @@ void CookieDialog::setupUi() {
             m_detectStatusLabel->setStyleSheet("color: #4ade80; font-size: 11px;");
         }
     }
+    m_userHasSelectedChannel = false;
 }
 
 void CookieDialog::updateStatusDisplay() {
@@ -665,8 +668,11 @@ void CookieDialog::onChannelComboIndexChanged(int index) {
     if (index <= 0) {
         m_pageIdEdit->clear();
         m_channelNameEdit->clear();
+        m_accountIndexCombo->blockSignals(true);
         m_accountIndexCombo->setCurrentIndex(0);
-        applyChannelSelection(/*closeDialog=*/false);
+        m_accountIndexCombo->blockSignals(false);
+        m_userHasSelectedChannel = true;
+        updateActiveChannelDisplay();
         return;
     }
     size_t channelIdx = static_cast<size_t>(index - 1);
@@ -683,6 +689,7 @@ void CookieDialog::onChannelComboIndexChanged(int index) {
         targetSlot = 0;
     }
 
+    m_accountIndexCombo->blockSignals(true);
     if (targetSlot >= 0) {
         for (int i = 0; i < m_accountIndexCombo->count(); ++i) {
             if (m_accountIndexCombo->itemData(i).toInt() == targetSlot) {
@@ -693,7 +700,9 @@ void CookieDialog::onChannelComboIndexChanged(int index) {
     } else {
         m_accountIndexCombo->setCurrentIndex(0);
     }
-    applyChannelSelection(/*closeDialog=*/false);
+    m_accountIndexCombo->blockSignals(false);
+    m_userHasSelectedChannel = true;
+    updateActiveChannelDisplay();
 }
 
 void CookieDialog::applyChannelSelection(bool closeDialog) {
@@ -715,22 +724,37 @@ void CookieDialog::applyChannelSelection(bool closeDialog) {
         }
     }
 
+    bool changed = true;
     if (m_client) {
-        QByteArray pageIdBytes = pageId.toUtf8();
-        QByteArray nameBytes = name.toUtf8();
-        m_client->setSelectedChannel(std::string_view(pageIdBytes.constData(), pageIdBytes.size()), authUserIndex,
-                                     std::string_view(nameBytes.constData(), nameBytes.size()));
+        std::string curPageId = m_client->getSelectedChannelPageId();
+        int curAuthIdx = m_client->getSelectedAuthUserIndex();
+        std::string curName = m_client->getSelectedChannelName();
+        if (curPageId == pageId.toStdString() && curAuthIdx == authUserIndex && curName == name.toStdString()) {
+            changed = false;
+        }
     }
 
-    AppSettings::instance().setSelectedChannel(pageId, authUserIndex, name);
-    AppSettings::instance().sync();
+    if (changed) {
+        if (m_client) {
+            QByteArray pageIdBytes = pageId.toUtf8();
+            QByteArray nameBytes = name.toUtf8();
+            m_client->setSelectedChannel(std::string_view(pageIdBytes.constData(), pageIdBytes.size()), authUserIndex,
+                                         std::string_view(nameBytes.constData(), nameBytes.size()));
+        }
 
-    m_userHasSelectedChannel = false;
-    updateActiveChannelDisplay();
-    emit channelChanged(pageId, authUserIndex, name);
-    LOG_INFO("[CookieDialog] Applied active channel: '{}' (pageId: '{}', authUser: {})",
-             std::string_view(name.toUtf8().constData(), name.toUtf8().size()),
-             std::string_view(pageId.toUtf8().constData(), pageId.toUtf8().size()), authUserIndex);
+        AppSettings::instance().setSelectedChannel(pageId, authUserIndex, name);
+        AppSettings::instance().sync();
+
+        m_userHasSelectedChannel = false;
+        updateActiveChannelDisplay();
+        emit channelChanged(pageId, authUserIndex, name);
+        LOG_INFO("[CookieDialog] Applied active channel: '{}' (pageId: '{}', authUser: {})",
+                 std::string_view(name.toUtf8().constData(), name.toUtf8().size()),
+                 std::string_view(pageId.toUtf8().constData(), pageId.toUtf8().size()), authUserIndex);
+    } else {
+        m_userHasSelectedChannel = false;
+        updateActiveChannelDisplay();
+    }
     if (closeDialog) {
         QDialog::accept();
     }
@@ -852,6 +876,7 @@ void CookieDialog::onLogLevelChanged(int index) {
 void CookieDialog::onAllowAv1Toggled(bool checked) {
     AppSettings::instance().setAllowAv1(checked);
     AppSettings::instance().sync();
+    emit allowAv1Changed(checked);
 }
 
 void CookieDialog::onDefaultQualityChanged(int index) {
@@ -860,5 +885,6 @@ void CookieDialog::onDefaultQualityChanged(int index) {
     QString quality = m_defaultQualityCombo->itemText(index);
     AppSettings::instance().setQuality(quality);
     AppSettings::instance().sync();
+    emit defaultQualityChanged(quality);
 }
 

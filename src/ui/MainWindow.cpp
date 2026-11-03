@@ -96,7 +96,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_playerWidget->setQuality(savedQuality);
     m_playerWidget->setVolume(AppSettings::instance().getVolume());
 
-    QTimer::singleShot(0, this, &MainWindow::loadHomeFeedAsync);
+    QTimer::singleShot(0, this, [this]() { loadHomeFeedAsync(); });
 }
 
 MainWindow::~MainWindow() {
@@ -404,8 +404,14 @@ void MainWindow::setStatusText(const QString &msg) {
 }
 
 void MainWindow::loadHomeFeedAsync() {
-    updateNavTabs(NavTab::Home);
-    loadFeedAsync("FEwhat_to_watch", "Home Feed");
+    loadHomeFeedAsync(true);
+}
+
+void MainWindow::loadHomeFeedAsync(bool switchToFeed) {
+    if (switchToFeed) {
+        updateNavTabs(NavTab::Home);
+    }
+    loadFeedAsync("FEwhat_to_watch", "Home Feed", switchToFeed);
 }
 
 void MainWindow::onShortsFilterToggled() {
@@ -422,6 +428,16 @@ void MainWindow::onAuthButtonClicked() {
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     connect(dialog, &CookieDialog::cookiesUpdated, this, &MainWindow::onCookiesUpdated);
     connect(dialog, &CookieDialog::channelChanged, this, &MainWindow::onChannelChanged);
+    connect(dialog, &CookieDialog::allowAv1Changed, this, [this](bool allow) {
+        if (m_playerWidget) {
+            m_playerWidget->setAllowAv1(allow);
+        }
+    });
+    connect(dialog, &CookieDialog::defaultQualityChanged, this, [this](const QString &quality) {
+        if (m_playerWidget) {
+            m_playerWidget->setDefaultQualityPreference(quality);
+        }
+    });
     dialog->exec();
 }
 
@@ -435,7 +451,9 @@ void MainWindow::onChannelChanged(const QString &pageId, int authUserIndex, cons
     AppSettings::instance().setSelectedChannel(pageId, authUserIndex, channelName);
     AppSettings::instance().sync();
     updateAuthButtonUi();
-    loadHomeFeedAsync();
+
+    bool isWatchingVideo = (m_stackedWidget && m_stackedWidget->currentWidget() == m_playerWidget);
+    loadHomeFeedAsync(/*switchToFeed=*/!isWatchingVideo);
 }
 
 void MainWindow::onCookiesUpdated() {
@@ -445,7 +463,8 @@ void MainWindow::onCookiesUpdated() {
             LOG_WARN("[MainWindow] Failed to save updated cookies to AppData");
         }
     }
-    loadHomeFeedAsync();
+    bool isWatchingVideo = (m_stackedWidget && m_stackedWidget->currentWidget() == m_playerWidget);
+    loadHomeFeedAsync(/*switchToFeed=*/!isWatchingVideo);
 }
 
 void MainWindow::onSubscriptionsClicked() {
@@ -464,14 +483,16 @@ void MainWindow::onSubscriptionsClicked() {
     loadFeedAsync("FEsubscriptions", "Subscriptions Feed");
 }
 
-void MainWindow::loadFeedAsync(const std::string &browseId, const QString &modeName) {
-    if (m_playerWidget) {
-        m_playerWidget->stopPlayback();
+void MainWindow::loadFeedAsync(const std::string &browseId, const QString &modeName, bool switchToFeed) {
+    if (switchToFeed) {
+        if (m_playerWidget) {
+            m_playerWidget->stopPlayback();
+        }
+        m_stackedWidget->setCurrentIndex(0);
     }
 
     m_isLoadingFeed.store(true);
     setStatusText(QString("Fetching %1...").arg(modeName));
-    m_stackedWidget->setCurrentIndex(0);
 
     runAsync<FeedTaskResult>(
         [this, browseId]() {
@@ -667,9 +688,6 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     ++m_feedGeneration;  // Cancel any in-flight async watchers
     AppSettings::instance().setGeometry(saveGeometry());
     AppSettings::instance().setWindowState(saveState());
-    if (m_playerWidget) {
-        AppSettings::instance().setQuality(m_playerWidget->getQuality());
-    }
     if (m_playerWidget) {
         AppSettings::instance().setVolume(m_playerWidget->getVolume());
     }

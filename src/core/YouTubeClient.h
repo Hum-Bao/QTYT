@@ -112,6 +112,14 @@ public:
     [[nodiscard]] bool subscribeChannel(std::string_view channelId, bool subscribe, std::string &errorMessage,
                                         const std::atomic<bool> *cancelToken = nullptr);
 
+    // Fetch comments batch using continuation token (for initial video comments, sort switches, or subsequent pages / replies)
+    [[nodiscard]] CommentsResult fetchComments(std::string_view continuationToken, std::string &errorMessage,
+                                               const std::atomic<bool> *cancelToken = nullptr) const;
+
+    // Perform an action on a comment (like, unlike, dislike, undislike) using action token
+    [[nodiscard]] bool performCommentAction(std::string_view actionToken, std::string &errorMessage,
+                                            const std::atomic<bool> *cancelToken = nullptr) const;
+
     // Helpers to build headers and base context
     [[nodiscard]] std::vector<std::string> buildHeaders(bool authenticated,
                                                         std::string_view referer = "https://www.youtube.com/",

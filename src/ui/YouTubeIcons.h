@@ -40,7 +40,12 @@ enum class IconId : uint16_t {
     ChevronLeft,
     Close,
     TheaterMode,
-    Autoplay
+    Autoplay,
+    Pin,
+    Heart,
+    ChevronDown,
+    ChevronUp,
+    SortLines
 };
 
 struct IconKey {
@@ -346,7 +351,11 @@ template<typename DrawFn>
 // Thumbs Up (Like) icon
 [[nodiscard]] inline QIcon thumbUp(const QColor &color = QColor(0xf1, 0xf1, 0xf1), bool filled = false, int size = 18) {
     return detail::makeCachedIcon(detail::IconId::ThumbUp, size, size, color.rgba(), filled ? 1 : 0,
-                                  [color, filled](QPainter &p, const QRectF &) {
+                                  [color, filled, size](QPainter &p, const QRectF &) {
+                                      if (size != 18) {
+                                          const double s = static_cast<double>(size) / 18.0;
+                                          p.scale(s, s);
+                                      }
                                       QPen pen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
                                       p.setPen(pen);
                                       p.setBrush(filled ? QBrush(color) : Qt::NoBrush);
@@ -375,7 +384,11 @@ template<typename DrawFn>
 [[nodiscard]] inline QIcon thumbDown(const QColor &color = QColor(0xf1, 0xf1, 0xf1), bool filled = false,
                                      int size = 18) {
     return detail::makeCachedIcon(detail::IconId::ThumbDown, size, size, color.rgba(), filled ? 1 : 0,
-                                  [color, filled](QPainter &p, const QRectF &) {
+                                  [color, filled, size](QPainter &p, const QRectF &) {
+                                      if (size != 18) {
+                                          const double s = static_cast<double>(size) / 18.0;
+                                          p.scale(s, s);
+                                      }
                                       QPen pen(color, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
                                       p.setPen(pen);
                                       p.setBrush(filled ? QBrush(color) : Qt::NoBrush);
@@ -606,6 +619,108 @@ template<typename DrawFn>
 }
 [[nodiscard]] inline QIcon autoplay(int size, const QColor &color, bool on = true) {
     return autoplay(on, color, size);
+}
+
+// Pinned comment pushpin icon
+[[nodiscard]] inline QIcon pin(const QColor &color = QColor(0xaa, 0xaa, 0xaa), int size = 14) {
+    return detail::makeCachedIcon(detail::IconId::Pin, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      const double ox = (size - 14.0) / 2.0;
+                                      const double oy = (size - 14.0) / 2.0;
+                                      p.setRenderHint(QPainter::Antialiasing, true);
+                                      QPen pen(color, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      p.setBrush(color);
+
+                                      // Pin head & barrel angled or upright
+                                      QPolygonF poly;
+                                      poly << QPointF(ox + 4.0, oy + 2.5) << QPointF(ox + 10.0, oy + 2.5)
+                                           << QPointF(ox + 8.5, oy + 7.5) << QPointF(ox + 5.5, oy + 7.5);
+                                      p.drawPolygon(poly);
+                                      // Pin needle
+                                      p.drawLine(QPointF(ox + 7.0, oy + 7.5), QPointF(ox + 7.0, oy + 12.0));
+                                  });
+}
+[[nodiscard]] inline QIcon pin(int size, const QColor &color) {
+    return pin(color, size);
+}
+
+// Creator heart icon
+[[nodiscard]] inline QIcon heart(const QColor &color = QColor(0xff, 0x00, 0x00), int size = 14) {
+    return detail::makeCachedIcon(detail::IconId::Heart, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      const double ox = (size - 14.0) / 2.0;
+                                      const double oy = (size - 14.0) / 2.0;
+                                      p.setRenderHint(QPainter::Antialiasing, true);
+                                      p.setPen(Qt::NoPen);
+                                      p.setBrush(color);
+
+                                      QPainterPath heartPath;
+                                      heartPath.moveTo(ox + 7.0, oy + 11.5);
+                                      heartPath.cubicTo(ox + 2.0, oy + 7.5, ox + 1.5, oy + 3.5, ox + 4.5, oy + 2.5);
+                                      heartPath.cubicTo(ox + 6.0, oy + 2.0, ox + 6.8, oy + 3.5, ox + 7.0, oy + 4.2);
+                                      heartPath.cubicTo(ox + 7.2, oy + 3.5, ox + 8.0, oy + 2.0, ox + 9.5, oy + 2.5);
+                                      heartPath.cubicTo(ox + 12.5, oy + 3.5, ox + 12.0, oy + 7.5, ox + 7.0, oy + 11.5);
+                                      p.fillPath(heartPath, color);
+                                  });
+}
+[[nodiscard]] inline QIcon heart(int size, const QColor &color) {
+    return heart(color, size);
+}
+
+// Chevron Down icon
+[[nodiscard]] inline QIcon chevronDown(const QColor &color = QColor(0xf1, 0xf1, 0xf1), int size = 14) {
+    return detail::makeCachedIcon(detail::IconId::ChevronDown, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      if (size != 14) {
+                                          const double s = static_cast<double>(size) / 14.0;
+                                          p.scale(s, s);
+                                      }
+                                      QPen pen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      p.drawLine(QPointF(3.0, 5.0), QPointF(7.0, 9.0));
+                                      p.drawLine(QPointF(7.0, 9.0), QPointF(11.0, 5.0));
+                                  });
+}
+[[nodiscard]] inline QIcon chevronDown(int size, const QColor &color) {
+    return chevronDown(color, size);
+}
+
+// Chevron Up icon
+[[nodiscard]] inline QIcon chevronUp(const QColor &color = QColor(0xf1, 0xf1, 0xf1), int size = 14) {
+    return detail::makeCachedIcon(detail::IconId::ChevronUp, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      if (size != 14) {
+                                          const double s = static_cast<double>(size) / 14.0;
+                                          p.scale(s, s);
+                                      }
+                                      QPen pen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      p.drawLine(QPointF(3.0, 9.0), QPointF(7.0, 5.0));
+                                      p.drawLine(QPointF(7.0, 5.0), QPointF(11.0, 9.0));
+                                  });
+}
+[[nodiscard]] inline QIcon chevronUp(int size, const QColor &color) {
+    return chevronUp(color, size);
+}
+
+// Sort lines icon (YouTube descending bar sort icon)
+[[nodiscard]] inline QIcon sortLines(const QColor &color = QColor(0xf1, 0xf1, 0xf1), int size = 18) {
+    return detail::makeCachedIcon(detail::IconId::SortLines, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      if (size != 18) {
+                                          const double s = static_cast<double>(size) / 18.0;
+                                          p.scale(s, s);
+                                      }
+                                      QPen pen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      p.drawLine(QPointF(3.0, 4.5), QPointF(15.0, 4.5));
+                                      p.drawLine(QPointF(3.0, 9.0), QPointF(11.5, 9.0));
+                                      p.drawLine(QPointF(3.0, 13.5), QPointF(7.5, 13.5));
+                                  });
+}
+[[nodiscard]] inline QIcon sortLines(int size, const QColor &color) {
+    return sortLines(color, size);
 }
 
 }  // namespace lightyt::ui::icons

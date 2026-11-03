@@ -14,6 +14,7 @@
 #include "StatsForNerdsWidget.h"
 #include "ThumbnailLoader.h"
 #include "YouTubeIcons.h"
+#include "CommentsWidget.h"
 
 #include <QAction>
 #include <QApplication>
@@ -412,7 +413,17 @@ void PlayerWidget::setupUi() {
     descLayout->addWidget(m_toggleDescriptionBtn);
 
     metaLayout->addWidget(m_descriptionCard);
-    metaLayout->addStretch(1);
+
+    // 3d. Comments Section (beneath metadata, left of suggested videos)
+    m_commentsWidget = new lightyt::ui::CommentsWidget(scrollContent);
+    m_commentsWidget->setObjectName("commentsWidget");
+    m_commentsWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_commentsWidget->setYouTubeClient(m_client);
+    connect(m_commentsWidget, &lightyt::ui::CommentsWidget::heightChanged, this, [this]() {
+        if (m_watchGridLayout) {
+            m_watchGridLayout->activate();
+        }
+    });
 
     // 4. Compact Recommendations Feed Sidebar (Virtualised FeedView)
     m_recommendationsView = new FeedView(scrollContent);
@@ -439,7 +450,7 @@ void PlayerWidget::setupUi() {
                 }
             });
 
-    // WatchNext recommendations pagination triggers
+    // WatchNext recommendations and comments pagination triggers
     connect(m_recommendationsView, &FeedView::requestMoreVideos, this,
             &PlayerWidget::onRecommendationsScrollRequested);
     connect(m_scrollArea->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
@@ -450,6 +461,9 @@ void PlayerWidget::setupUi() {
         int maxVal = sb->maximum();
         if (maxVal > 0 && value >= (maxVal * 85) / 100) {
             onRecommendationsScrollRequested();
+            if (m_commentsWidget) {
+                m_commentsWidget->loadNextPageIfNeeded();
+            }
         }
     });
 
@@ -617,6 +631,9 @@ void PlayerWidget::playVideo(const VideoItem &item, const QString &quality, cons
     m_nextContinuationToken.clear();
     if (m_recommendationsView) {
         m_recommendationsView->clearVideos();
+    }
+    if (m_commentsWidget) {
+        m_commentsWidget->clear();
     }
 
     m_playbackSpeed = 1.0;
@@ -819,6 +836,11 @@ void PlayerWidget::playVideo(const VideoItem &item, const QString &quality, cons
                         self->m_fullDescription = nextMeta.description;
                         self->updateDescriptionUi();
                     }
+                    if (self->m_commentsWidget) {
+                        self->m_commentsWidget->loadCommentsForVideo(self->m_currentItem.id,
+                                                                    nextMeta.commentsContinuationToken,
+                                                                    nextMeta.commentCountText);
+                    }
                 },
                 Qt::QueuedConnection);
         }
@@ -883,6 +905,8 @@ void PlayerWidget::playVideo(const VideoItem &item, const QString &quality, cons
                     return;
                 }
 
+                self->m_currentVideoUrl = info.videoUrl;
+                self->m_currentAudioUrl = info.audioUrl;
                 self->m_currentVideoItag = info.videoItag;
                 self->m_currentAudioItag = info.audioItag;
                 self->updateStatsContext();
@@ -894,9 +918,13 @@ void PlayerWidget::playVideo(const VideoItem &item, const QString &quality, cons
 }
 
 void PlayerWidget::setQuality(const QString &quality) {
-    if (m_quality != quality) {
-        m_quality = quality;
-        onQualityChanged(quality);
+    onQualityChanged(quality);
+}
+
+void PlayerWidget::setDefaultQualityPreference(const QString &quality) {
+    m_quality = quality;
+    if (m_controlsOverlay) {
+        m_controlsOverlay->setQuality(quality);
     }
 }
 
@@ -906,6 +934,10 @@ void PlayerWidget::setPlaybackSpeed(double speed) {
 
 void PlayerWidget::stopPlayback() {
     m_generation.fetch_add(1, std::memory_order_relaxed);
+    m_currentVideoUrl.clear();
+    m_currentAudioUrl.clear();
+    m_currentVideoItag.clear();
+    m_currentAudioItag.clear();
     if (m_resolveCancel) {
         m_resolveCancel->store(true, std::memory_order_relaxed);
     }
@@ -928,6 +960,9 @@ void PlayerWidget::stopPlayback() {
         m_controlsOverlay->setPosition(0.0);
         m_controlsOverlay->setBufferedPosition(0.0);
         m_controlsOverlay->showControlsAnimated();
+    }
+    if (m_commentsWidget) {
+        m_commentsWidget->clear();
     }
 }
 
@@ -1025,6 +1060,9 @@ void PlayerWidget::onVolumeChanged(int value) {
 }
 
 void PlayerWidget::onQualityChanged(const QString &quality) {
+    if (m_quality == quality && m_player && m_player->getState() != PlaybackState::Idle) {
+        return;
+    }
     m_quality = quality;
     AppSettings::instance().setQuality(quality);
     if (m_controlsOverlay) {
@@ -1069,6 +1107,15 @@ void PlayerWidget::onQualityChanged(const QString &quality) {
                         self->m_errorBanner->show();
                         return;
                     }
+                    if (info.videoUrl == self->m_currentVideoUrl && info.audioUrl == self->m_currentAudioUrl) {
+                        LOG_INFO("[PlayerWidget] Selected quality resolved to currently active stream URLs (preserving buffer cache).");
+                        self->m_currentVideoItag = info.videoItag;
+                        self->m_currentAudioItag = info.audioItag;
+                        self->updateStatsContext();
+                        return;
+                    }
+                    self->m_currentVideoUrl = info.videoUrl;
+                    self->m_currentAudioUrl = info.audioUrl;
                     self->m_currentVideoItag = info.videoItag;
                     self->m_currentAudioItag = info.audioItag;
                     self->updateStatsContext();
@@ -1081,6 +1128,9 @@ void PlayerWidget::onQualityChanged(const QString &quality) {
 
 void PlayerWidget::onPlaybackSpeedChanged(double speed) {
     double clamped = std::clamp(speed, 1.0, 2.0);
+    if (std::abs(clamped - m_playbackSpeed) < 0.005) {
+        return;
+    }
     m_playbackSpeed = clamped;
     if (m_player) {
         m_player->setPlaybackSpeed(clamped);
@@ -1365,10 +1415,16 @@ void PlayerWidget::applyLayoutMode(bool isTheater, bool isFullscreen) {
     m_watchGridLayout->removeWidget(m_surfaceContainer);
     m_watchGridLayout->removeWidget(m_metadataContainer);
     m_watchGridLayout->removeWidget(m_recommendationsView);
+    if (m_commentsWidget) {
+        m_watchGridLayout->removeWidget(m_commentsWidget);
+    }
 
     if (m_isFullscreen) {
         m_metadataContainer->hide();
         m_recommendationsView->hide();
+        if (m_commentsWidget) {
+            m_commentsWidget->hide();
+        }
         if (m_scrollArea) {
             if (m_scrollArea->verticalScrollBar()) {
                 m_scrollArea->verticalScrollBar()->setValue(0);
@@ -1395,6 +1451,9 @@ void PlayerWidget::applyLayoutMode(bool isTheater, bool isFullscreen) {
     } else if (m_isTheaterMode) {
         m_metadataContainer->show();
         m_recommendationsView->show();
+        if (m_commentsWidget) {
+            m_commentsWidget->show();
+        }
         if (m_scrollArea) {
             m_scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         }
@@ -1403,15 +1462,18 @@ void PlayerWidget::applyLayoutMode(bool isTheater, bool isFullscreen) {
         m_watchGridLayout->setVerticalSpacing(8);
 
         // Feature 15: Theater Mode top-banner layout:
-        // Video spans columns 0..1 full-width across top; metadata in row 1 col 0; recommendations in row 1 col 1.
+        // Video spans columns 0..1 full-width across top; metadata in row 1 col 0; comments in row 2 col 0; recommendations in row 1..2 col 1.
         m_watchGridLayout->addWidget(m_surfaceContainer, 0, 0, 1, 2, Qt::AlignTop);
         m_watchGridLayout->addWidget(m_metadataContainer, 1, 0, 1, 1, Qt::AlignTop);
-        m_watchGridLayout->addWidget(m_recommendationsView, 1, 1, 1, 1, Qt::AlignTop);
+        if (m_commentsWidget) {
+            m_watchGridLayout->addWidget(m_commentsWidget, 2, 0, 1, 1, Qt::AlignTop);
+        }
+        m_watchGridLayout->addWidget(m_recommendationsView, 1, 1, 2, 1, Qt::AlignTop);
         m_watchGridLayout->setColumnStretch(0, 1);
         m_watchGridLayout->setColumnStretch(1, 0);
         m_watchGridLayout->setRowStretch(0, 0);
-        m_watchGridLayout->setRowStretch(1, 1);
-        m_watchGridLayout->setRowStretch(2, 0);
+        m_watchGridLayout->setRowStretch(1, 0);
+        m_watchGridLayout->setRowStretch(2, 1);
 
         if (m_surfaceContainer) {
             m_surfaceContainer->setStyleSheet("#surfaceContainer { background-color: #000000; border-radius: 0px; }");
@@ -1423,6 +1485,9 @@ void PlayerWidget::applyLayoutMode(bool isTheater, bool isFullscreen) {
     } else {
         m_metadataContainer->show();
         m_recommendationsView->show();
+        if (m_commentsWidget) {
+            m_commentsWidget->show();
+        }
         if (m_scrollArea) {
             m_scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         }
@@ -1431,15 +1496,18 @@ void PlayerWidget::applyLayoutMode(bool isTheater, bool isFullscreen) {
         m_watchGridLayout->setVerticalSpacing(8);
 
         // Feature 14: Normal View 2-column layout:
-        // Video 16:9 and metadata in column 0; compact recommendations FeedView in column 1 spanning rows 0..1.
+        // Video 16:9 in row 0 col 0; metadata in row 1 col 0; comments in row 2 col 0; compact recommendations in col 1 spanning rows 0..2.
         m_watchGridLayout->addWidget(m_surfaceContainer, 0, 0, 1, 1, Qt::AlignTop);
         m_watchGridLayout->addWidget(m_metadataContainer, 1, 0, 1, 1, Qt::AlignTop);
-        m_watchGridLayout->addWidget(m_recommendationsView, 0, 1, 2, 1, Qt::AlignTop);
+        if (m_commentsWidget) {
+            m_watchGridLayout->addWidget(m_commentsWidget, 2, 0, 1, 1, Qt::AlignTop);
+        }
+        m_watchGridLayout->addWidget(m_recommendationsView, 0, 1, 3, 1, Qt::AlignTop);
         m_watchGridLayout->setColumnStretch(0, 1);
         m_watchGridLayout->setColumnStretch(1, 0);
         m_watchGridLayout->setRowStretch(0, 0);
-        m_watchGridLayout->setRowStretch(1, 1);
-        m_watchGridLayout->setRowStretch(2, 0);
+        m_watchGridLayout->setRowStretch(1, 0);
+        m_watchGridLayout->setRowStretch(2, 1);
 
         if (m_surfaceContainer) {
             m_surfaceContainer->setStyleSheet("#surfaceContainer { background-color: #000000; border-radius: 0px; }");
@@ -1682,6 +1750,12 @@ void PlayerWidget::loadChannelAvatar(const std::string &avatarUrl) {
     QPixmap cached = ThumbnailLoader::instance().requestAvatar(url, 40);
     if (!cached.isNull()) {
         setChannelAvatarPixmap(cached);
+    }
+}
+
+void PlayerWidget::updateCommentsClient() {
+    if (m_commentsWidget) {
+        m_commentsWidget->setYouTubeClient(m_client);
     }
 }
 

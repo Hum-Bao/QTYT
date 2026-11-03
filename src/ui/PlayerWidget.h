@@ -25,6 +25,9 @@ class QGridLayout;
 class PlayerControlsOverlay;
 class StatsForNerdsWidget;
 class FeedView;
+namespace lightyt::ui {
+class CommentsWidget;
+}
 
 class PlayerWidget : public QWidget {
     Q_OBJECT
@@ -40,12 +43,17 @@ public:
     void setPlaybackSpeed(double speed);
     [[nodiscard]] double getPlaybackSpeed() const noexcept { return m_playbackSpeed; }
 
+    void setAllowAv1(bool allow) noexcept { m_allowAv1 = allow; }
+    [[nodiscard]] bool getAllowAv1() const noexcept { return m_allowAv1; }
+    void setDefaultQualityPreference(const QString &quality);
+
     void stopPlayback();
 
     void setYouTubeClient(YouTubeClient *client) {
         std::unique_lock<std::shared_mutex> lock(m_asyncGuard->mutex);
         m_client = client;
         m_asyncGuard->client = client;
+        updateCommentsClient();
     }
 
     [[nodiscard]] int getVolume() const;
@@ -97,6 +105,7 @@ private:
     QWidget *m_metadataContainer = nullptr;
     QGridLayout *m_watchGridLayout = nullptr;
     FeedView *m_recommendationsView = nullptr;
+    lightyt::ui::CommentsWidget *m_commentsWidget = nullptr;
     QLabel *m_titleLabel = nullptr;
     QLabel *m_authorLabel = nullptr;
     QLabel *m_subscriberCountLabel = nullptr;
@@ -140,6 +149,8 @@ private:
     VideoItem m_currentItem;
     std::string m_cookieFilePath;
     bool m_allowAv1 = false;
+    std::string m_currentVideoUrl;
+    std::string m_currentAudioUrl;
     std::string m_currentVideoItag;
     std::string m_currentAudioItag;
     std::unique_ptr<PlayerController> m_player;
@@ -166,6 +177,7 @@ private:
     void updateStatsContext();
     void loadChannelAvatar(const std::string &avatarUrl);
     void setChannelAvatarPixmap(const QPixmap &pix);
+    void updateCommentsClient();
     [[nodiscard]] double effectiveDuration() const noexcept;
     [[nodiscard]] static double parseDurationString(std::string_view durStr) noexcept;
     [[nodiscard]] static QString formatCount(int64_t count);

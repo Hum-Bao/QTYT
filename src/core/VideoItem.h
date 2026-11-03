@@ -50,4 +50,43 @@ struct WatchMetadata {
     std::string autoplayVideoId;
     std::vector<VideoItem> relatedVideos;
     std::string continuationToken;
+    std::string commentsContinuationToken;
+    std::string commentCountText;
+};
+
+struct CommentItem {
+    std::string commentId;
+    std::string author;
+    std::string authorChannelId;
+    std::string authorAvatarUrl;
+    std::string publishedTime;
+    std::string text;
+    std::string likeCountText;
+    int64_t likeCount = 0;
+    bool isLiked = false;
+    bool isDisliked = false;
+    bool isPinned = false;
+    bool isHearted = false;
+    std::string heartTooltip;
+    bool isAuthorChannelOwner = false;
+    bool isReply = false;
+
+    // Reply thread metadata
+    int replyCount = 0;
+    std::string replyCountText;
+    std::string repliesContinuationToken;
+
+    // Action tokens for /youtubei/v1/comment/perform_comment_action
+    std::string likeActionToken;
+    std::string unlikeActionToken;
+    std::string dislikeActionToken;
+    std::string undislikeActionToken;
+};
+
+struct CommentsResult {
+    std::vector<CommentItem> comments;
+    std::string nextContinuationToken;
+    std::string commentCountText;
+    std::string topCommentsToken;
+    std::string newestCommentsToken;
 };

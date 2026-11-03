@@ -28,6 +28,8 @@ public:
 signals:
     void cookiesUpdated();
     void channelChanged(const QString &pageId, int authUserIndex, const QString &channelName);
+    void allowAv1Changed(bool allow);
+    void defaultQualityChanged(const QString &quality);
 
 protected:
     void closeEvent(QCloseEvent *event) override;

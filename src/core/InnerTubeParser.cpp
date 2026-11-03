@@ -422,6 +422,221 @@ AccountChannel parseAccountRenderer(std::string_view type, const nlohmann::json 
     return ch;
 }
 
+bool parseCommentRenderer(const nlohmann::json &cr, CommentItem &outItem, bool isReply, bool preferWebp) {
+    if (!cr.is_object())
+        return false;
+    outItem.isReply = isReply;
+    if (cr.contains("commentId") && cr["commentId"].is_string()) {
+        outItem.commentId = cr["commentId"].get<std::string>();
+    }
+    if (cr.contains("authorText")) {
+        outItem.author = InnerTubeParser::extractText(cr["authorText"]);
+    }
+    if (cr.contains("authorEndpoint") && cr["authorEndpoint"].is_object()) {
+        const auto &ep = cr["authorEndpoint"];
+        if (ep.contains("browseEndpoint") && ep["browseEndpoint"].contains("browseId")) {
+            outItem.authorChannelId = ep["browseEndpoint"].value("browseId", "");
+        }
+    }
+    if (cr.contains("authorThumbnail")) {
+        outItem.authorAvatarUrl = InnerTubeParser::extractBestThumbnail(cr["authorThumbnail"], "", preferWebp);
+    }
+    if (cr.contains("publishedTimeText")) {
+        outItem.publishedTime = InnerTubeParser::extractText(cr["publishedTimeText"]);
+    }
+    if (cr.contains("contentText")) {
+        outItem.text = InnerTubeParser::extractText(cr["contentText"]);
+    }
+    if (cr.contains("voteCount")) {
+        outItem.likeCountText = InnerTubeParser::extractText(cr["voteCount"]);
+        outItem.likeCount = InnerTubeParser::parseLikeCountString(outItem.likeCountText);
+    }
+    if (cr.contains("voteStatus") && cr["voteStatus"].is_string()) {
+        std::string vs = cr["voteStatus"].get<std::string>();
+        if (vs == "LIKE") {
+            outItem.isLiked = true;
+            outItem.isDisliked = false;
+        } else if (vs == "DISLIKE") {
+            outItem.isDisliked = true;
+            outItem.isLiked = false;
+        }
+    }
+    if (cr.contains("authorIsChannelOwner") && cr["authorIsChannelOwner"].is_boolean()) {
+        outItem.isAuthorChannelOwner = cr["authorIsChannelOwner"].get<bool>();
+    }
+    if (cr.contains("pinnedCommentBadge")) {
+        outItem.isPinned = true;
+    }
+    if (const auto *actions = findObject(cr, "actionButtons")) {
+        if (const auto *cab = findObject(*actions, "commentActionButtonsRenderer")) {
+            if (const auto *ch = findObject(*cab, "creatorHeart")) {
+                if (const auto *chr = findObject(*ch, "creatorHeartRenderer")) {
+                    outItem.isHearted = chr->value("isHearted", false);
+                    outItem.heartTooltip = chr->value("tooltip", "");
+                }
+            }
+            if (const auto *lb = findObject(*cab, "likeButton")) {
+                if (const auto *tb = findObject(*lb, "toggleButtonRenderer")) {
+                    if (tb->contains("isToggled") && (*tb)["isToggled"].is_boolean() &&
+                        (*tb)["isToggled"].get<bool>()) {
+                        outItem.isLiked = true;
+                    }
+                    if (const auto *dse = findObject(*tb, "defaultServiceEndpoint")) {
+                        if (const auto *pca = findObject(*dse, "performCommentActionEndpoint")) {
+                            outItem.likeActionToken = pca->value("action", "");
+                        }
+                    }
+                    if (const auto *tse = findObject(*tb, "toggledServiceEndpoint")) {
+                        if (const auto *pca = findObject(*tse, "performCommentActionEndpoint")) {
+                            outItem.unlikeActionToken = pca->value("action", "");
+                        }
+                    }
+                }
+            }
+            if (const auto *db = findObject(*cab, "dislikeButton")) {
+                if (const auto *tb = findObject(*db, "toggleButtonRenderer")) {
+                    if (tb->contains("isToggled") && (*tb)["isToggled"].is_boolean() &&
+                        (*tb)["isToggled"].get<bool>()) {
+                        outItem.isDisliked = true;
+                    }
+                    if (const auto *dse = findObject(*tb, "defaultServiceEndpoint")) {
+                        if (const auto *pca = findObject(*dse, "performCommentActionEndpoint")) {
+                            outItem.dislikeActionToken = pca->value("action", "");
+                        }
+                    }
+                    if (const auto *tse = findObject(*tb, "toggledServiceEndpoint")) {
+                        if (const auto *pca = findObject(*tse, "performCommentActionEndpoint")) {
+                            outItem.undislikeActionToken = pca->value("action", "");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return !outItem.text.empty() || !outItem.author.empty();
+}
+
+bool parseCommentViewModel(const nlohmann::json &vm,
+                           const std::unordered_map<std::string, const nlohmann::json *> &entityMap,
+                           CommentItem &outItem, bool isReply, bool preferWebp) {
+    if (!vm.is_object())
+        return false;
+    outItem.isReply = isReply;
+    if (vm.contains("commentId") && vm["commentId"].is_string()) {
+        outItem.commentId = vm["commentId"].get<std::string>();
+    }
+    const nlohmann::json *payload = nullptr;
+    if (!outItem.commentId.empty()) {
+        auto it = entityMap.find(outItem.commentId);
+        if (it != entityMap.end()) {
+            payload = it->second;
+        }
+    }
+    if (payload != nullptr) {
+        if (const auto *props = findObject(*payload, "properties")) {
+            if (outItem.commentId.empty()) {
+                outItem.commentId = props->value("commentId", "");
+            }
+            if (props->contains("content") && (*props)["content"].contains("content")) {
+                outItem.text = (*props)["content"].value("content", "");
+            }
+            if (outItem.publishedTime.empty()) {
+                outItem.publishedTime = props->value("publishedTime", "");
+            }
+        }
+        if (const auto *author = findObject(*payload, "author")) {
+            if (outItem.author.empty()) {
+                outItem.author = author->value("displayName", "");
+            }
+            if (outItem.authorChannelId.empty()) {
+                outItem.authorChannelId = author->value("channelId", "");
+            }
+            if (outItem.authorAvatarUrl.empty()) {
+                outItem.authorAvatarUrl = author->value("avatarThumbnailUrl", "");
+            }
+            outItem.isAuthorChannelOwner = author->value("isCreator", false);
+        }
+        if (const auto *toolbar = findObject(*payload, "toolbar")) {
+            std::string lk = toolbar->value("likeCountNotliked", "");
+            if (lk.empty())
+                lk = toolbar->value("likeCountLiked", "");
+            if (!lk.empty()) {
+                outItem.likeCountText = lk;
+                outItem.likeCount = InnerTubeParser::parseLikeCountString(lk);
+            }
+            if (toolbar->contains("replyCount")) {
+                if ((*toolbar)["replyCount"].is_number()) {
+                    outItem.replyCount = (*toolbar)["replyCount"].get<int>();
+                } else if ((*toolbar)["replyCount"].is_string()) {
+                    outItem.replyCount = std::max(0, std::atoi((*toolbar)["replyCount"].get<std::string>().c_str()));
+                }
+                if (outItem.replyCount > 0 && outItem.replyCountText.empty()) {
+                    outItem.replyCountText =
+                        std::to_string(outItem.replyCount) + (outItem.replyCount == 1 ? " reply" : " replies");
+                }
+            }
+            outItem.isHearted = toolbar->value("isHearted", false);
+            outItem.heartTooltip = toolbar->value("heartActiveTooltip", "");
+
+            auto extractAction = [](const nlohmann::json &cmd) -> std::string {
+                if (const auto *ic = findObject(cmd, "innertubeCommand")) {
+                    if (const auto *pca = findObject(*ic, "performCommentActionEndpoint")) {
+                        return pca->value("action", "");
+                    }
+                }
+                if (const auto *pca = findObject(cmd, "performCommentActionEndpoint")) {
+                    return pca->value("action", "");
+                }
+                return {};
+            };
+            if (const auto *lc = findObject(*toolbar, "likeCommand")) {
+                outItem.likeActionToken = extractAction(*lc);
+            }
+            if (const auto *ulc = findObject(*toolbar, "unlikeCommand")) {
+                outItem.unlikeActionToken = extractAction(*ulc);
+            }
+            if (const auto *dc = findObject(*toolbar, "dislikeCommand")) {
+                outItem.dislikeActionToken = extractAction(*dc);
+            }
+            if (const auto *udc = findObject(*toolbar, "undislikeCommand")) {
+                outItem.undislikeActionToken = extractAction(*udc);
+            }
+        }
+    }
+    if (outItem.text.empty() && vm.contains("contentText")) {
+        outItem.text = InnerTubeParser::extractText(vm["contentText"]);
+    }
+    if (outItem.text.empty() && vm.contains("content")) {
+        outItem.text = InnerTubeParser::extractText(vm["content"]);
+    }
+    if (outItem.author.empty() && vm.contains("authorText")) {
+        outItem.author = InnerTubeParser::extractText(vm["authorText"]);
+    }
+    if (outItem.author.empty() && vm.contains("authorName")) {
+        outItem.author = InnerTubeParser::extractText(vm["authorName"]);
+    }
+    if (outItem.publishedTime.empty() && vm.contains("publishedTimeText")) {
+        outItem.publishedTime = InnerTubeParser::extractText(vm["publishedTimeText"]);
+    }
+    if (outItem.authorAvatarUrl.empty() && vm.contains("authorAvatarImage")) {
+        outItem.authorAvatarUrl = InnerTubeParser::extractBestThumbnail(vm["authorAvatarImage"], "", preferWebp);
+    }
+    if (outItem.likeCountText.empty() && vm.contains("likeCount")) {
+        outItem.likeCountText = InnerTubeParser::extractText(vm["likeCount"]);
+        outItem.likeCount = InnerTubeParser::parseLikeCountString(outItem.likeCountText);
+    }
+    if (vm.contains("isPinned") && vm["isPinned"].is_boolean()) {
+        outItem.isPinned = vm["isPinned"].get<bool>();
+    }
+    if (vm.contains("pinnedBadge") || vm.contains("pinnedText")) {
+        outItem.isPinned = true;
+    }
+    if (vm.contains("authorIsChannelOwner") && vm["authorIsChannelOwner"].is_boolean()) {
+        outItem.isAuthorChannelOwner = vm["authorIsChannelOwner"].get<bool>();
+    }
+    return !outItem.text.empty() || !outItem.author.empty();
+}
+
 }  // namespace
 
 std::string InnerTubeParser::extractText(const nlohmann::json &obj) {
@@ -1531,7 +1746,8 @@ bool InnerTubeParser::parseWatchNextMetadata(const nlohmann::json &root, WatchMe
         outMeta.autoplayVideoId.clear();
     }
 
-    // 3. Extract relatedVideos from twoColumnWatchNextResults.secondaryResults (or root fallback), excluding active videoId
+    // 3. Extract relatedVideos from twoColumnWatchNextResults.secondaryResults (or root fallback), excluding active
+    // videoId
     const nlohmann::json *secondaryNode = nullptr;
     if (twoColumn != nullptr) {
         if (const auto *sec = findObject(*twoColumn, "secondaryResults")) {
@@ -1573,9 +1789,309 @@ bool InnerTubeParser::parseWatchNextMetadata(const nlohmann::json &root, WatchMe
         recursivelyFindContinuationToken(root, outMeta.continuationToken);
     }
 
+    // 5. Extract commentsContinuationToken and commentCountText from primary column results (not secondaryResults)
+    std::function<void(const nlohmann::json &, int)> findCommentsInfo = [&](const nlohmann::json &node, int depth) {
+        if (depth > 32 || (!outMeta.commentsContinuationToken.empty() && !outMeta.commentCountText.empty())) {
+            return;
+        }
+        if (node.is_object()) {
+            if (const auto *cep = findObject(node, "commentsEntryPointHeaderRenderer")) {
+                if (outMeta.commentCountText.empty()) {
+                    if (cep->contains("commentCount")) {
+                        outMeta.commentCountText = extractText((*cep)["commentCount"]);
+                    } else if (cep->contains("headerText")) {
+                        outMeta.commentCountText = extractText((*cep)["headerText"]);
+                    }
+                }
+            }
+            if (const auto *ch = findObject(node, "commentsHeaderRenderer")) {
+                if (outMeta.commentCountText.empty()) {
+                    if (ch->contains("countText")) {
+                        outMeta.commentCountText = extractText((*ch)["countText"]);
+                    } else if (ch->contains("commentsCount")) {
+                        outMeta.commentCountText = extractText((*ch)["commentsCount"]);
+                    }
+                }
+            }
+            if (const auto *isr = findObject(node, "itemSectionRenderer")) {
+                std::string_view secId = findString(*isr, "sectionIdentifier");
+                std::string_view tgtId = findString(*isr, "targetId");
+                if (secId == "comment-item-section" || tgtId == "comments-section" ||
+                    secId.find("comment") != std::string_view::npos ||
+                    (secId.empty() && tgtId.empty())) {
+                    if (outMeta.commentsContinuationToken.empty()) {
+                        recursivelyFindContinuationToken(*isr, outMeta.commentsContinuationToken);
+                    }
+                    if (outMeta.commentCountText.empty()) {
+                        if (const auto *cep = findObject(*isr, "commentsEntryPointHeaderRenderer")) {
+                            outMeta.commentCountText = extractText((*cep)["commentCount"]);
+                        }
+                    }
+                }
+            }
+            if (const auto *cir = findObject(node, "continuationItemRenderer")) {
+                if (outMeta.commentsContinuationToken.empty()) {
+                    recursivelyFindContinuationToken(*cir, outMeta.commentsContinuationToken);
+                }
+            }
+            for (const auto &[k, v] : node.items()) {
+                if (k != "secondaryResults" && !isIgnoredSubtree(k)) {
+                    findCommentsInfo(v, depth + 1);
+                }
+            }
+        } else if (node.is_array()) {
+            for (const auto &item : node) {
+                findCommentsInfo(item, depth + 1);
+            }
+        }
+    };
+
+    if (twoColumn != nullptr) {
+        if (const auto *res = findObject(*twoColumn, "results")) {
+            findCommentsInfo(*res, 0);
+        }
+    }
+    if (outMeta.commentsContinuationToken.empty()) {
+        findCommentsInfo(root, 0);
+    }
+
     return !outMeta.channelAvatarUrl.empty() || !outMeta.description.empty() || !outMeta.title.empty() ||
-           outMeta.likeCount > 0 || outMeta.isLiked || outMeta.isDisliked ||
-           !outMeta.relatedVideos.empty() || !outMeta.autoplayVideoId.empty();
+           outMeta.likeCount > 0 || outMeta.isLiked || outMeta.isDisliked || !outMeta.relatedVideos.empty() ||
+           !outMeta.autoplayVideoId.empty() || !outMeta.commentsContinuationToken.empty();
+}
+
+bool InnerTubeParser::parseCommentsResponse(const nlohmann::json &root, CommentsResult &outResult, bool preferWebp) {
+    if (!root.is_object()) {
+        return false;
+    }
+
+    // 1. Build lookup table for modern EntityBatchUpdate mutations (keyed by commentId)
+    std::unordered_map<std::string, const nlohmann::json *> commentEntityMap;
+    std::unordered_map<std::string, const nlohmann::json *> toolbarStateMap;
+    std::unordered_map<std::string, const nlohmann::json *> toolbarSurfaceMap;
+    std::unordered_map<std::string, const nlohmann::json *> commentSurfaceMap;
+
+    auto indexMutations = [&](const nlohmann::json &mutationsArr) {
+        if (!mutationsArr.is_array())
+            return;
+        for (const auto &mut : mutationsArr) {
+            if (!mut.is_object() || !mut.contains("payload") || !mut["payload"].is_object())
+                continue;
+            const auto &payload = mut["payload"];
+            if (const auto *cep = findObject(payload, "commentEntityPayload")) {
+                if (const auto *props = findObject(*cep, "properties")) {
+                    std::string cid = props->value("commentId", "");
+                    if (!cid.empty()) {
+                        commentEntityMap[cid] = cep;
+                    }
+                }
+                std::string k = mut.value("entityKey", "");
+                if (!k.empty()) {
+                    commentEntityMap[k] = cep;
+                }
+            }
+            if (const auto *tsp = findObject(payload, "engagementToolbarStateEntityPayload")) {
+                std::string k = tsp->value("key", "");
+                if (k.empty())
+                    k = mut.value("entityKey", "");
+                if (!k.empty())
+                    toolbarStateMap[k] = tsp;
+            }
+            if (const auto *esp = findObject(payload, "engagementToolbarSurfaceEntityPayload")) {
+                std::string k = esp->value("key", "");
+                if (k.empty())
+                    k = mut.value("entityKey", "");
+                if (!k.empty())
+                    toolbarSurfaceMap[k] = esp;
+            }
+            if (const auto *csp = findObject(payload, "commentSurfaceEntityPayload")) {
+                std::string k = csp->value("key", "");
+                if (k.empty())
+                    k = mut.value("entityKey", "");
+                if (!k.empty())
+                    commentSurfaceMap[k] = csp;
+            }
+        }
+    };
+
+    if (const auto *fw = findObject(root, "frameworkUpdates")) {
+        if (const auto *ebu = findObject(*fw, "entityBatchUpdate")) {
+            if (const auto *muts = findArray(*ebu, "mutations")) {
+                indexMutations(*muts);
+            }
+        }
+    }
+
+    auto parseCommentObj = [&](const nlohmann::json &obj, CommentItem &outItem, bool isReply) -> bool {
+        if (!obj.is_object())
+            return false;
+        if (const auto *cr = findObject(obj, "commentRenderer")) {
+            return parseCommentRenderer(*cr, outItem, isReply, preferWebp);
+        }
+        if (const auto *cvm = findObject(obj, "commentViewModel")) {
+            const nlohmann::json *innerVm = cvm;
+            if (const auto *nested = findObject(*cvm, "commentViewModel")) {
+                innerVm = nested;
+            }
+            return parseCommentViewModel(*innerVm, commentEntityMap, outItem, isReply, preferWebp);
+        }
+        if (obj.contains("commentId")) {
+            return parseCommentViewModel(obj, commentEntityMap, outItem, isReply, preferWebp);
+        }
+        return false;
+    };
+
+    auto handleContinuationItems = [&](const nlohmann::json &itemsArr) {
+        if (!itemsArr.is_array())
+            return;
+        for (const auto &item : itemsArr) {
+            if (!item.is_object())
+                continue;
+
+            // 1. Comments header (count and sort menu)
+            if (const auto *ch = findObject(item, "commentsHeaderRenderer")) {
+                if (outResult.commentCountText.empty()) {
+                    if (ch->contains("countText")) {
+                        outResult.commentCountText = extractText((*ch)["countText"]);
+                    } else if (ch->contains("commentsCount")) {
+                        outResult.commentCountText = extractText((*ch)["commentsCount"]);
+                    }
+                }
+                if (const auto *sm = findObject(*ch, "sortMenu")) {
+                    if (const auto *sfs = findObject(*sm, "sortFilterSubMenuRenderer")) {
+                        if (const auto *subItems = findArray(*sfs, "subMenuItems")) {
+                            for (const auto &si : *subItems) {
+                                if (!si.is_object())
+                                    continue;
+                                std::string title = extractText(si.value("title", nlohmann::json{}));
+                                std::string token;
+                                recursivelyFindContinuationToken(si, token);
+                                if (!token.empty()) {
+                                    std::string lowerTitle;
+                                    lowerTitle.reserve(title.size());
+                                    for (char c : title)
+                                        lowerTitle.push_back(
+                                            static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+                                    if (lowerTitle.find("top") != std::string::npos) {
+                                        outResult.topCommentsToken = token;
+                                    } else if (lowerTitle.find("new") != std::string::npos) {
+                                        outResult.newestCommentsToken = token;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // 2. Comment Thread (top-level comment + replies)
+            if (const auto *ctr = findObject(item, "commentThreadRenderer")) {
+                CommentItem topItem;
+                bool ok = false;
+                if (const auto *cObj = findObject(*ctr, "comment")) {
+                    ok = parseCommentObj(*cObj, topItem, false);
+                } else if (const auto *vmObj = findObject(*ctr, "commentViewModel")) {
+                    ok = parseCommentObj(*vmObj, topItem, false);
+                }
+                if (!ok) {
+                    ok = parseCommentObj(*ctr, topItem, false);
+                }
+
+                if (ok && !topItem.commentId.empty()) {
+                    // Check replies within thread
+                    if (const auto *rep = findObject(*ctr, "replies")) {
+                        if (const auto *crr = findObject(*rep, "commentRepliesRenderer")) {
+                            if (const auto *vr = findObject(*crr, "viewReplies")) {
+                                if (const auto *btn = findObject(*vr, "buttonRenderer")) {
+                                    topItem.replyCountText = extractText((*btn)["text"]);
+                                }
+                            }
+                            if (topItem.replyCountText.empty() && crr->contains("viewRepliesText")) {
+                                topItem.replyCountText = extractText((*crr)["viewRepliesText"]);
+                            }
+                            if (topItem.replyCount <= 0 && !topItem.replyCountText.empty()) {
+                                topItem.replyCount = static_cast<int>(parseLikeCountString(topItem.replyCountText));
+                            }
+                            recursivelyFindContinuationToken(*crr, topItem.repliesContinuationToken);
+
+                            // Preloaded replies if any
+                            if (const auto *cArr = findArray(*crr, "contents")) {
+                                for (const auto &repItem : *cArr) {
+                                    CommentItem inlineReply;
+                                    if (parseCommentObj(repItem, inlineReply, true) && !inlineReply.commentId.empty()) {
+                                        outResult.comments.push_back(std::move(inlineReply));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    outResult.comments.push_back(std::move(topItem));
+                }
+                continue;
+            }
+
+            // 3. Direct comment (e.g. In reply continuation streams)
+            CommentItem directItem;
+            if (parseCommentObj(item, directItem, true) && !directItem.commentId.empty()) {
+                outResult.comments.push_back(std::move(directItem));
+                continue;
+            }
+
+            // 4. Trailing stream continuation
+            if (const auto *cir = findObject(item, "continuationItemRenderer")) {
+                recursivelyFindContinuationToken(*cir, outResult.nextContinuationToken);
+            }
+        }
+    };
+
+    // Process onResponseReceivedEndpoints
+    if (const auto *endpoints = findArray(root, "onResponseReceivedEndpoints")) {
+        for (const auto &ep : *endpoints) {
+            if (!ep.is_object())
+                continue;
+            if (const auto *cmd = findObject(ep, "reloadContinuationItemsCommand")) {
+                if (const auto *items = findArray(*cmd, "continuationItems")) {
+                    handleContinuationItems(*items);
+                }
+            }
+            if (const auto *cmd = findObject(ep, "appendContinuationItemsAction")) {
+                if (const auto *items = findArray(*cmd, "continuationItems")) {
+                    handleContinuationItems(*items);
+                }
+            }
+        }
+    }
+
+    // Older / alternate fallback: continuationContents
+    if (const auto *cc = findObject(root, "continuationContents")) {
+        if (const auto *csc = findObject(*cc, "commentSectionContinuation")) {
+            if (const auto *hdr = findObject(*csc, "header")) {
+                if (const auto *ch = findObject(*hdr, "commentsHeaderRenderer")) {
+                    if (outResult.commentCountText.empty()) {
+                        outResult.commentCountText = extractText((*ch)["countText"]);
+                    }
+                }
+            }
+            if (const auto *contents = findArray(*csc, "contents")) {
+                handleContinuationItems(*contents);
+            }
+            if (outResult.nextContinuationToken.empty()) {
+                recursivelyFindContinuationToken(*csc, outResult.nextContinuationToken);
+            }
+        }
+        if (const auto *crc = findObject(*cc, "commentRepliesContinuation")) {
+            if (const auto *contents = findArray(*crc, "contents")) {
+                handleContinuationItems(*contents);
+            }
+            if (outResult.nextContinuationToken.empty()) {
+                recursivelyFindContinuationToken(*crc, outResult.nextContinuationToken);
+            }
+        }
+    }
+
+    return !outResult.comments.empty() || !outResult.nextContinuationToken.empty() ||
+           !outResult.commentCountText.empty();
 }
 
 std::vector<std::string> InnerTubeParser::extractAvailableQualities(const nlohmann::json &root) {

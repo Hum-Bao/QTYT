@@ -37,9 +37,13 @@ public:
     [[nodiscard]] static int64_t parseLikeCountString(std::string_view text);
 
     // Parse InnerTube /next response tree for watch page metadata (avatar, full description, subscriber count, like
-    // status)
+    // status, comments continuation token)
     [[nodiscard]] static bool parseWatchNextMetadata(const nlohmann::json &root, WatchMetadata &outMeta,
                                                      bool preferWebp = false);
+
+    // Parse comments response tree (both modern entity-store mutations and classic renderers)
+    [[nodiscard]] static bool parseCommentsResponse(const nlohmann::json &root, CommentsResult &outResult,
+                                                    bool preferWebp = true);
 
     // Extract highest appropriate resolution thumbnail URL
     [[nodiscard]] static std::string extractBestThumbnail(const nlohmann::json &thumbObj, std::string_view videoId,

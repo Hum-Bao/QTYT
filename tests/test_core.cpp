@@ -1180,6 +1180,7 @@ void testWatchNextContinuationTokenScopingCommentsIsolation() {
     // Crucial check: continuationToken must NOT be polluted by the comment stream token!
     CHECK(meta.continuationToken.empty());
     CHECK(meta.continuationToken != "COMMENT_STREAM_TOKEN_XYZ");
+    CHECK_EQ(meta.commentsContinuationToken, "COMMENT_STREAM_TOKEN_XYZ");
 
     // 2. Response without twoColumnWatchNextResults (e.g. continuation pagination payload)
     // where continuation token is at root/onResponseReceivedEndpoints level
@@ -1217,6 +1218,216 @@ void testWatchNextContinuationTokenScopingCommentsIsolation() {
     CHECK_EQ(page2Meta.continuationToken, "NEXT_RECOMMENDATIONS_TOKEN_ABC");
 
     std::cout << "[PASS] testWatchNextContinuationTokenScopingCommentsIsolation\n";
+}
+
+void testCommentsParsing() {
+    // 1. Classic commentThreadRenderer with commentRenderer
+    nlohmann::json classicCommentsJson = {
+        {"onResponseReceivedEndpoints", nlohmann::json::array({
+            {
+                {"reloadContinuationItemsCommand", {
+                    {"continuationItems", nlohmann::json::array({
+                        {
+                            {"commentsHeaderRenderer", {
+                                {"countText", {{"simpleText", "456 Comments"}}},
+                                {"sortMenu", {
+                                    {"sortFilterSubMenuRenderer", {
+                                        {"subMenuItems", nlohmann::json::array({
+                                            {
+                                                {"title", {{"simpleText", "Top comments"}}},
+                                                {"serviceEndpoint", {
+                                                    {"continuationCommand", {
+                                                        {"token", "SORT_TOP_TOKEN_123"}
+                                                    }}
+                                                }}
+                                            },
+                                            {
+                                                {"title", {{"simpleText", "Newest first"}}},
+                                                {"serviceEndpoint", {
+                                                    {"continuationCommand", {
+                                                        {"token", "SORT_NEWEST_TOKEN_456"}
+                                                    }}
+                                                }}
+                                            }
+                                        })}
+                                    }}
+                                }}
+                            }}
+                        },
+                        {
+                            {"commentThreadRenderer", {
+                                {"comment", {
+                                    {"commentRenderer", {
+                                        {"commentId", "comment_classic_01"},
+                                        {"authorText", {{"simpleText", "@RockFan"}}},
+                                        {"authorThumbnail", {
+                                            {"thumbnails", nlohmann::json::array({
+                                                {{"url", "https://yt3.ggpht.com/avatar01.jpg"}, {"width", 48}}
+                                            })}
+                                        }},
+                                        {"publishedTimeText", {{"runs", nlohmann::json::array({{{"text", "3 days ago"}}})}}},
+                                        {"contentText", {{"runs", nlohmann::json::array({{{"text", "Awesome song!"}}})}}},
+                                        {"voteCount", {{"simpleText", "1.5K"}}},
+                                        {"voteStatus", "LIKE"},
+                                        {"authorIsChannelOwner", true},
+                                        {"pinnedCommentBadge", nlohmann::json::object()},
+                                        {"actionButtons", {
+                                            {"commentActionButtonsRenderer", {
+                                                {"creatorHeart", {
+                                                    {"creatorHeartRenderer", {
+                                                        {"isHearted", true},
+                                                        {"tooltip", "Loved by Author"}
+                                                    }}
+                                                }},
+                                                {"likeButton", {
+                                                    {"toggleButtonRenderer", {
+                                                        {"isToggled", true},
+                                                        {"defaultServiceEndpoint", {
+                                                            {"performCommentActionEndpoint", {{"action", "ACT_LIKE_01"}}}
+                                                        }},
+                                                        {"toggledServiceEndpoint", {
+                                                            {"performCommentActionEndpoint", {{"action", "ACT_UNLIKE_01"}}}
+                                                        }}
+                                                    }}
+                                                }},
+                                                {"dislikeButton", {
+                                                    {"toggleButtonRenderer", {
+                                                        {"defaultServiceEndpoint", {
+                                                            {"performCommentActionEndpoint", {{"action", "ACT_DISLIKE_01"}}}
+                                                        }}
+                                                    }}
+                                                }}
+                                            }}
+                                        }}
+                                    }}
+                                }},
+                                {"replies", {
+                                    {"commentRepliesRenderer", {
+                                        {"viewReplies", {
+                                            {"buttonRenderer", {
+                                                {"text", {{"simpleText", "View 8 replies"}}}
+                                            }}
+                                        }},
+                                        {"continuationEndpoint", {
+                                            {"continuationCommand", {
+                                                {"token", "REPLY_CONTINUATION_TOKEN_01"}
+                                            }}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        },
+                        {
+                            {"continuationItemRenderer", {
+                                {"continuationEndpoint", {
+                                    {"continuationCommand", {
+                                        {"token", "PAGE2_COMMENTS_TOKEN_789"}
+                                    }}
+                                }}
+                            }}
+                        }
+                    })}
+                }}
+            }
+        })}
+    };
+
+    CommentsResult res1;
+    bool ok1 = lightyt::InnerTubeParser::parseCommentsResponse(classicCommentsJson, res1);
+    CHECK(ok1);
+    CHECK_EQ(res1.commentCountText, "456 Comments");
+    CHECK_EQ(res1.topCommentsToken, "SORT_TOP_TOKEN_123");
+    CHECK_EQ(res1.newestCommentsToken, "SORT_NEWEST_TOKEN_456");
+    CHECK_EQ(res1.nextContinuationToken, "PAGE2_COMMENTS_TOKEN_789");
+    CHECK_EQ(res1.comments.size(), 1);
+
+    const auto &c1 = res1.comments[0];
+    CHECK_EQ(c1.commentId, "comment_classic_01");
+    CHECK_EQ(c1.author, "@RockFan");
+    CHECK_EQ(c1.text, "Awesome song!");
+    CHECK_EQ(c1.publishedTime, "3 days ago");
+    CHECK_EQ(c1.likeCount, 1500);
+    CHECK(c1.isLiked);
+    CHECK(!c1.isDisliked);
+    CHECK(c1.isAuthorChannelOwner);
+    CHECK(c1.isPinned);
+    CHECK(c1.isHearted);
+    CHECK_EQ(c1.heartTooltip, "Loved by Author");
+    CHECK_EQ(c1.likeActionToken, "ACT_LIKE_01");
+    CHECK_EQ(c1.unlikeActionToken, "ACT_UNLIKE_01");
+    CHECK_EQ(c1.dislikeActionToken, "ACT_DISLIKE_01");
+    CHECK_EQ(c1.replyCount, 8);
+    CHECK_EQ(c1.repliesContinuationToken, "REPLY_CONTINUATION_TOKEN_01");
+
+    // 2. Modern EntityBatchUpdate comments response
+    nlohmann::json modernCommentsJson = {
+        {"frameworkUpdates", {
+            {"entityBatchUpdate", {
+                {"mutations", nlohmann::json::array({
+                    {
+                        {"entityKey", "comment_modern_99"},
+                        {"payload", {
+                            {"commentEntityPayload", {
+                                {"properties", {
+                                    {"commentId", "comment_modern_99"},
+                                    {"content", {{"content", "Modern YouTube comment from 2026."}}},
+                                    {"publishedTime", "1 hour ago"}
+                                }},
+                                {"author", {
+                                    {"displayName", "FutureViewer"},
+                                    {"avatarThumbnailUrl", "https://yt3.ggpht.com/avatar99.jpg"},
+                                    {"channelId", "UCfuture99"},
+                                    {"isCreator", false}
+                                }},
+                                {"toolbar", {
+                                    {"likeCountNotliked", "42"},
+                                    {"replyCount", 3},
+                                    {"isHearted", false},
+                                    {"likeCommand", {
+                                        {"innertubeCommand", {
+                                            {"performCommentActionEndpoint", {{"action", "MOD_ACT_LIKE"}}}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }
+                })}
+            }}
+        }},
+        {"onResponseReceivedEndpoints", nlohmann::json::array({
+            {
+                {"appendContinuationItemsAction", {
+                    {"continuationItems", nlohmann::json::array({
+                        {
+                            {"commentThreadRenderer", {
+                                {"commentViewModel", {
+                                    {"commentViewModel", {
+                                        {"commentId", "comment_modern_99"}
+                                    }}
+                                }}
+                            }}
+                        }
+                    })}
+                }}
+            }
+        })}
+    };
+
+    CommentsResult res2;
+    bool ok2 = lightyt::InnerTubeParser::parseCommentsResponse(modernCommentsJson, res2);
+    CHECK(ok2);
+    CHECK_EQ(res2.comments.size(), 1);
+    const auto &c2 = res2.comments[0];
+    CHECK_EQ(c2.commentId, "comment_modern_99");
+    CHECK_EQ(c2.author, "FutureViewer");
+    CHECK_EQ(c2.text, "Modern YouTube comment from 2026.");
+    CHECK_EQ(c2.publishedTime, "1 hour ago");
+    CHECK_EQ(c2.likeCount, 42);
+    CHECK_EQ(c2.likeActionToken, "MOD_ACT_LIKE");
+    CHECK_EQ(c2.replyCount, 3);
+
+    std::cout << "[PASS] testCommentsParsing\n";
 }
 
 void testWatchNextAutoplaySelfLoopPrevention() {
@@ -3027,6 +3238,7 @@ int main() noexcept {
         testWatchNextMetadataRecommendationsAutoplayAndContinuation();
         testWatchNextActiveVideoExclusionPreSet();
         testWatchNextContinuationTokenScopingCommentsIsolation();
+        testCommentsParsing();
         testWatchNextAutoplaySelfLoopPrevention();
         testContinuationKindRouting();
         testStreamResolver();

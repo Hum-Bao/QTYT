@@ -574,6 +574,10 @@ void PlayerSettingsPopup::rebuildQualityMenu() {
         row->addStretch(1);
 
         connect(btn, &QPushButton::clicked, this, [this, q]() {
+            if (q == m_currentQuality) {
+                close();
+                return;
+            }
             m_currentQuality = q;
             if (m_qualityValLabel)
                 m_qualityValLabel->setText(q);
@@ -627,6 +631,10 @@ void PlayerSettingsPopup::rebuildSpeedMenu() {
         row->addStretch(1);
 
         connect(btn, &QPushButton::clicked, this, [this, s]() {
+            if (std::abs(s - m_currentSpeed) < 0.01) {
+                close();
+                return;
+            }
             m_currentSpeed = s;
             if (m_speedValLabel) {
                 m_speedValLabel->setText(std::abs(s - 1.0) < 0.01 ? "Normal" : QString::number(s) + "x");
@@ -911,10 +919,16 @@ void PlayerControlsOverlay::setupUi() {
 
     m_settingsPopup = new PlayerSettingsPopup(this);
     connect(m_settingsPopup, &PlayerSettingsPopup::qualitySelected, this, [this](const QString &q) {
+        if (m_quality == q) {
+            return;
+        }
         m_quality = q;
         emit qualityChanged(q);
     });
     connect(m_settingsPopup, &PlayerSettingsPopup::playbackSpeedSelected, this, [this](double s) {
+        if (std::abs(m_playbackSpeed - s) < 0.005) {
+            return;
+        }
         m_playbackSpeed = s;
         emit playbackSpeedChanged(s);
     });

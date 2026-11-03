@@ -702,3 +702,80 @@ bool YouTubeClient::subscribeChannel(std::string_view channelId, bool subscribe,
     LOG_INFO("[YouTubeClient] Successfully {}d channel {}", action, channelId);
     return true;
 }
+
+CommentsResult YouTubeClient::fetchComments(std::string_view continuationToken, std::string &errorMessage,
+                                           const std::atomic<bool> *cancelToken) const {
+    CommentsResult result;
+    if (continuationToken.empty()) {
+        errorMessage = "Empty continuation token";
+        return result;
+    }
+
+    bool useAuth = m_cookieManager && m_cookieManager->hasAuth();
+    nlohmann::json req;
+    req["context"] = buildBaseContext(!useAuth);
+    req["continuation"] = std::string(continuationToken);
+
+    std::vector<std::string> headers = buildHeaders(useAuth, "https://www.youtube.com/");
+    std::string endpointUrl = lightyt::innertube::makeApiUrl("next");
+    HttpResponse res = postInnerTube(endpointUrl, req.dump(), headers, 10, cancelToken);
+
+    if (!res.isOk() && useAuth) {
+        LOG_INFO("[YouTubeClient] Authenticated comments request failed (HTTP {}). Retrying anonymously...",
+                 res.statusCode);
+        std::vector<std::string> anonHeaders = buildHeaders(false, "https://www.youtube.com/");
+        nlohmann::json anonReq;
+        anonReq["context"] = buildBaseContext(true);
+        anonReq["continuation"] = std::string(continuationToken);
+        res = postInnerTube(endpointUrl, anonReq.dump(), anonHeaders, 10, cancelToken);
+    }
+
+    if (!res.isOk()) {
+        errorMessage = res.error.empty() ? ("HTTP error " + std::to_string(res.statusCode)) : res.error;
+        LOG_WARN("[YouTubeClient] Comments request failed: {}", errorMessage);
+        return result;
+    }
+
+    try {
+        nlohmann::json parsed = nlohmann::json::parse(res.body);
+        (void)lightyt::InnerTubeParser::parseCommentsResponse(parsed, result);
+        LOG_INFO("[YouTubeClient] Extracted {} comments (next: {}, topSort: {}, newSort: {})",
+                 result.comments.size(), !result.nextContinuationToken.empty(),
+                 !result.topCommentsToken.empty(), !result.newestCommentsToken.empty());
+    } catch (const std::exception &e) {
+        errorMessage = std::string("JSON parse error: ") + e.what();
+        LOG_ERROR("[YouTubeClient] {}", errorMessage);
+    }
+
+    return result;
+}
+
+bool YouTubeClient::performCommentAction(std::string_view actionToken, std::string &errorMessage,
+                                         const std::atomic<bool> *cancelToken) const {
+    if (actionToken.empty()) {
+        errorMessage = "Empty action token";
+        return false;
+    }
+    if (!m_cookieManager || !m_cookieManager->hasAuth()) {
+        errorMessage = "Sign-in required to perform comment actions";
+        LOG_WARN("[YouTubeClient] {}", errorMessage);
+        return false;
+    }
+
+    nlohmann::json req;
+    req["context"] = buildBaseContext();
+    req["actions"] = nlohmann::json::array({std::string(actionToken)});
+
+    std::string endpointUrl = lightyt::innertube::makeApiUrl("comment/perform_comment_action");
+    std::vector<std::string> headers = buildHeaders(true, "https://www.youtube.com/");
+
+    HttpResponse res = postInnerTube(endpointUrl, req.dump(), headers, 10, cancelToken);
+    if (!res.isOk()) {
+        errorMessage = res.error.empty() ? ("HTTP error " + std::to_string(res.statusCode)) : res.error;
+        LOG_WARN("[YouTubeClient] perform_comment_action failed: {}", errorMessage);
+        return false;
+    }
+
+    LOG_INFO("[YouTubeClient] Successfully performed comment action");
+    return true;
+}

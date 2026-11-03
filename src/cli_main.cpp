@@ -18,6 +18,7 @@ void printHelp() {
         << "  accounts             List detected Google/YouTube accounts and channels\n"
         << "  search <query>       Search YouTube for videos\n"
         << "  resolve <id/url>     Test yt-dlp direct stream URL resolution\n"
+        << "  comments <id/url>    Fetch comments for a video\n"
         << "  auth-check           Check cookie status and auth hash\n"
         << "  formats              Print supported quality format strings\n"
         << "  help                 Show this help message\n";
@@ -87,7 +88,7 @@ int main(int argc, char *argv[]) {
             lightyt::log::Logger::instance().setLevel(lightyt::log::Level::Error);
         } else if (arg == "feed" || arg == "accounts" || arg == "auth-check" || arg == "formats" || arg == "help") {
             command = arg;
-        } else if (arg == "search" || arg == "resolve") {
+        } else if (arg == "search" || arg == "resolve" || arg == "comments") {
             if (i + 1 >= argc) {
                 std::cerr << "Missing argument for '" << arg << "'\n";
                 return 1;
@@ -183,6 +184,62 @@ int main(int argc, char *argv[]) {
                       << "    AuthUser: " << c.authUserIndex << "\n"
                       << "    Selected: " << (c.isSelected ? "true" : "false") << "\n\n";
         }
+        return 0;
+    }
+
+    if (command == "comments") {
+        std::string videoId = targetArg;
+        if (videoId.starts_with("https://") || videoId.starts_with("http://")) {
+            auto pos = videoId.find("v=");
+            if (pos != std::string::npos) {
+                videoId = videoId.substr(pos + 2);
+                auto amp = videoId.find('&');
+                if (amp != std::string::npos) {
+                    videoId = videoId.substr(0, amp);
+                }
+            }
+        }
+
+        std::cout << "Fetching watch metadata for: " << videoId << "...\n";
+        WatchMetadata meta = client.fetchWatchMetadata(videoId);
+        std::cout << "Video Title:    " << meta.title << "\n";
+        std::cout << "Comment Count:  " << (meta.commentCountText.empty() ? "(none found)" : meta.commentCountText)
+                  << "\n";
+        std::cout << "Comments Token: "
+                  << (meta.commentsContinuationToken.empty()
+                          ? "(none found)"
+                          : meta.commentsContinuationToken.substr(0, std::min<size_t>(30, meta.commentsContinuationToken.size())) + "...")
+                  << "\n\n";
+
+        if (meta.commentsContinuationToken.empty()) {
+            std::cerr << "No comments continuation token available for this video.\n";
+            return 1;
+        }
+
+        std::cout << "Fetching comments batch...\n";
+        CommentsResult commentsRes = client.fetchComments(meta.commentsContinuationToken, error);
+        if (!error.empty()) {
+            std::cerr << "[Comments Error]: " << error << "\n";
+            return 1;
+        }
+
+        std::cout << "Extracted " << commentsRes.comments.size() << " comment(s) (Next Token: "
+                  << (!commentsRes.nextContinuationToken.empty() ? "Yes" : "No")
+                  << " | Top Token: " << (!commentsRes.topCommentsToken.empty() ? "Yes" : "No")
+                  << " | Newest Token: " << (!commentsRes.newestCommentsToken.empty() ? "Yes" : "No") << ")\n";
+        std::cout << "--------------------------------------------------------------------------------\n";
+        const size_t count = (maxResults > 0 && maxResults < commentsRes.comments.size()) ? maxResults
+                                                                                           : commentsRes.comments.size();
+        for (size_t i = 0; i < count; ++i) {
+            const auto &c = commentsRes.comments[i];
+            std::cout << "[" << (i + 1) << "] " << c.author << (c.isAuthorChannelOwner ? " [CREATOR]" : "")
+                      << (c.isPinned ? " [PINNED]" : "") << " • " << c.publishedTime << "\n";
+            std::cout << "     Likes: " << (c.likeCountText.empty() ? "0" : c.likeCountText)
+                      << " | Replies: " << (c.replyCountText.empty() ? "0" : c.replyCountText)
+                      << (c.isHearted ? " | ❤️ Loved" : "") << "\n";
+            std::cout << "     \"" << c.text << "\"\n\n";
+        }
+        std::cout << "--------------------------------------------------------------------------------\n";
         return 0;
     }
 
