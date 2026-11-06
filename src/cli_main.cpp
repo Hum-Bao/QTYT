@@ -15,6 +15,11 @@ void printHelp() {
         << "  lightyt-cli [--cookies <path>] [--page-id <id>] [--auth-user <idx>] [--max <N>] [--verbose] [command]\n\n"
         << "Commands:\n"
         << "  feed                 Fetch home / recommended feed\n"
+        << "  history              Fetch watch history feed\n"
+        << "  watch-later          Fetch watch later playlist\n"
+        << "  liked                Fetch liked videos playlist\n"
+        << "  playlists            List user playlists\n"
+        << "  playlist <id>        Fetch videos in a playlist\n"
         << "  accounts             List detected Google/YouTube accounts and channels\n"
         << "  search <query>       Search YouTube for videos\n"
         << "  resolve <id/url>     Test yt-dlp direct stream URL resolution\n"
@@ -86,9 +91,9 @@ int main(int argc, char *argv[]) {
             lightyt::log::Logger::instance().setLevel(lightyt::log::Level::Trace);
         } else if (arg == "--quiet" || arg == "-q") {
             lightyt::log::Logger::instance().setLevel(lightyt::log::Level::Error);
-        } else if (arg == "feed" || arg == "accounts" || arg == "auth-check" || arg == "formats" || arg == "help") {
+        } else if (arg == "feed" || arg == "history" || arg == "watch-later" || arg == "liked" || arg == "playlists" || arg == "accounts" || arg == "auth-check" || arg == "formats" || arg == "help") {
             command = arg;
-        } else if (arg == "search" || arg == "resolve" || arg == "comments") {
+        } else if (arg == "search" || arg == "resolve" || arg == "comments" || arg == "playlist") {
             if (i + 1 >= argc) {
                 std::cerr << "Missing argument for '" << arg << "'\n";
                 return 1;
@@ -243,11 +248,52 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    if (command == "playlists") {
+        std::cout << "Fetching user playlists...\n";
+        auto res = client.fetchPlaylistsWithContinuation(error);
+        if (!error.empty()) {
+            std::cerr << "\n[Error]: " << error << "\n";
+            return 1;
+        }
+        std::cout << "Extracted " << res.playlists.size() << " playlist(s) (Continuation: "
+                  << (!res.continuationToken.empty() ? "Yes" : "No") << ")\n";
+        std::cout << "--------------------------------------------------------------------------------\n";
+        const size_t count = (maxResults > 0 && maxResults < res.playlists.size()) ? maxResults : res.playlists.size();
+        for (size_t i = 0; i < count; ++i) {
+            const auto &pl = res.playlists[i];
+            std::cout << "[" << std::setw(2) << (i + 1) << "] " << pl.title << "\n";
+            std::cout << "     ID:       " << pl.id << "\n";
+            std::cout << "     Videos:   " << (pl.videoCountText.empty() ? "N/A" : pl.videoCountText)
+                      << (pl.updatedTime.empty() ? "" : (" | " + pl.updatedTime)) << "\n";
+            std::cout << "     Author:   " << (pl.author.empty() ? "N/A" : pl.author) << "\n";
+            std::cout << "     Link:     " << pl.getPlaylistUrl() << "\n\n";
+        }
+        std::cout << "--------------------------------------------------------------------------------\n";
+        return 0;
+    }
+
     std::vector<VideoItem> videos;
 
     if (command == "feed") {
         std::cout << "Fetching " << (cookieMgr->hasAuth() ? "personalized recommendations..." : "home feed...") << "\n";
         videos = client.fetchHomeFeed(error);
+    } else if (command == "history") {
+        std::cout << "Fetching watch history...\n";
+        videos = client.fetchHistoryFeed(error).videos;
+    } else if (command == "watch-later") {
+        std::cout << "Fetching watch later videos...\n";
+        videos = client.fetchWatchLaterFeed(error).videos;
+    } else if (command == "liked") {
+        std::cout << "Fetching liked videos...\n";
+        videos = client.fetchLikedVideosFeed(error).videos;
+    } else if (command == "playlist") {
+        std::string browseId = targetArg;
+        if (!browseId.starts_with("VL")) {
+            browseId = "VL" + browseId;
+        }
+        std::cout << "Fetching playlist videos for browseId: " << browseId << "...\n";
+        auto feedRes = client.fetchFeedWithContinuation(browseId, error);
+        videos = std::move(feedRes.videos);
     } else if (command == "search") {
         std::cout << "Searching for: \"" << targetArg << "\"...\n";
         videos = client.search(targetArg, error);

@@ -17,8 +17,46 @@ struct VideoItem {
     std::string channelAvatarUrl;
     std::string description;
     bool isShort = false;
+    bool isPlaylist = false;
+    std::string playlistBrowseId;
 
     [[nodiscard]] std::string getWatchUrl() const { return "https://www.youtube.com/watch?v=" + id; }
+};
+
+struct PlaylistItem {
+    std::string id;              // Raw playlist ID (e.g. "PL...", "WL", "LL")
+    std::string browseId;        // InnerTube browseId (e.g. "VLPL...")
+    std::string title;
+    std::string author;
+    std::string videoCountText;  // e.g. "24 videos"
+    std::string updatedTime;     // e.g. "Updated today" / "Public"
+    std::string thumbnailUrl;
+    std::string description;
+    std::string viewCountText;   // e.g. "296 views"
+
+    [[nodiscard]] std::string getPlaylistUrl() const {
+        return "https://www.youtube.com/playlist?list=" + id;
+    }
+
+    [[nodiscard]] VideoItem toVideoItem() const {
+        VideoItem v;
+        v.id = id;
+        v.title = title;
+        v.author = author;
+        v.duration = videoCountText;
+        v.publishedTime = updatedTime;
+        v.thumbnailUrl = thumbnailUrl;
+        v.description = description;
+        v.viewCount = viewCountText;
+        v.isPlaylist = true;
+        v.playlistBrowseId = browseId.empty() ? ("VL" + id) : browseId;
+        return v;
+    }
+};
+
+struct PlaylistsResult {
+    std::vector<PlaylistItem> playlists;
+    std::string continuationToken;
 };
 
 struct AccountChannel {

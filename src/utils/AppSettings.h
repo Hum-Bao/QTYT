@@ -43,6 +43,10 @@ public:
     [[nodiscard]] bool getTheaterMode() const;
     void setTheaterMode(bool theater);
 
+    // Sidebar minimal mode (rail: 72px vs expanded: 240px, default: false)
+    [[nodiscard]] bool getSidebarMinimal() const;
+    void setSidebarMinimal(bool minimal);
+
     // Channel selection state
     [[nodiscard]] QString getSelectedChannelPageId() const;
     [[nodiscard]] int getSelectedAuthUserIndex() const;
@@ -79,6 +83,7 @@ private:
     bool m_allowAv1 = false;
     bool m_autoplay = true;
     bool m_theaterMode = false;
+    bool m_sidebarMinimal = false;
 
     QString m_selectedChannelPageId;
     int m_selectedAuthUserIndex = -1;

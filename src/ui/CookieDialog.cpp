@@ -243,9 +243,10 @@ void CookieDialog::setupUi() {
     cookiesLayout->setSpacing(12);
 
     auto *instructions = new QLabel("To sync your YouTube account recommendations without running a browser:\n\n"
-                                    "1. Open your browser and log into youtube.com\n"
-                                    "2. Export cookies via an extension (e.g. 'Get cookies.txt LOCALLY')\n"
-                                    "3. Import the file below, or paste the Netscape cookies directly.",
+                                    "1. Open your browser in an Incognito / InPrivate window\n"
+                                    "2. Navigate to https://www.youtube.com/robots.txt (to avoid background web scripts auto-rotating cookies)\n"
+                                    "3. Export cookies via an extension (e.g. 'Get cookies.txt LOCALLY')\n"
+                                    "4. Close the Incognito / InPrivate window immediately, then import or paste the cookies below.",
                                     cookiesTab);
     instructions->setWordWrap(true);
     instructions->setStyleSheet("color: #aaaaaa; line-height: 130%;");
@@ -551,19 +552,17 @@ void CookieDialog::onDetectChannelsClicked() {
     auto cancelToken = std::make_shared<std::atomic<bool>>(false);
     m_activeCancelToken = cancelToken;
 
-    // Create an isolated snapshot of cookies so the background worker never accesses
-    // m_client or m_cookieManager across threads.
-    auto tempCookieMgr = std::make_shared<CookieManager>(*m_cookieManager);
+    auto cookieMgr = m_cookieManager;
 
     QPointer<CookieDialog> self(this);
 
-    QThreadPool::globalInstance()->start([self, tempCookieMgr, cancelToken]() {
+    QThreadPool::globalInstance()->start([self, cookieMgr, cancelToken]() {
         if (cancelToken->load()) {
             return;
         }
 
         // Self-contained client running purely in background thread pool context
-        YouTubeClient detectClient(tempCookieMgr);
+        YouTubeClient detectClient(cookieMgr);
         std::string err;
         auto channels = detectClient.fetchAccountChannels(err, /*forceRefresh=*/true, cancelToken.get());
 
@@ -573,16 +572,15 @@ void CookieDialog::onDetectChannelsClicked() {
 
         QMetaObject::invokeMethod(
             self.data(),
-            [self, channels = std::move(channels), err = std::move(err), tempCookieMgr, cancelToken]() mutable {
+            [self, channels = std::move(channels), err = std::move(err), cookieMgr, cancelToken]() mutable {
                 if (!self || cancelToken->load()) {
                     return;
                 }
 
                 self->m_detectChannelsBtn->setEnabled(true);
 
-                // Safely synchronize any refreshed session cookies back to master store
-                if (tempCookieMgr && self->m_cookieManager) {
-                    *self->m_cookieManager = *tempCookieMgr;
+                if (cookieMgr) {
+                    cookieMgr->flushIfDirty();
                 }
 
                 if (self->m_client) {

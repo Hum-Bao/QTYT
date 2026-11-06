@@ -63,6 +63,10 @@ QVariant FeedModel::data(const QModelIndex &index, int role) const {
         m_loader->requestAvatar(item.channelAvatarUrl, 36);
         return {};
     }
+    case IsPlaylistRole:
+        return item.isPlaylist;
+    case PlaylistBrowseIdRole:
+        return QString::fromUtf8(item.playlistBrowseId.c_str());
     default:
         break;
     }

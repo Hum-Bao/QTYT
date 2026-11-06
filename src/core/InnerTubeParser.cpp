@@ -287,6 +287,41 @@ void recursivelyFindAccountRenderers(const nlohmann::json &node,
     }
 }
 
+void recursivelyFindPlaylistRenderers(const nlohmann::json &node,
+                                      std::vector<const nlohmann::json *> &outList,
+                                      int depth = 0) {
+    if (depth > 64) {
+        return;
+    }
+    if (node.is_object()) {
+        if (const auto *obj = findObject(node, "playlistRenderer")) {
+            outList.push_back(obj);
+            return;
+        }
+        if (const auto *obj = findObject(node, "gridPlaylistRenderer")) {
+            outList.push_back(obj);
+            return;
+        }
+        if (const auto *obj = findObject(node, "lockupViewModel")) {
+            if (obj->contains("contentType") && (*obj)["contentType"].is_string() &&
+                (*obj)["contentType"].get<std::string>() == "LOCKUP_CONTENT_TYPE_PLAYLIST") {
+                outList.push_back(obj);
+                return;
+            }
+        }
+
+        for (const auto &[key, val] : node.items()) {
+            if (!isIgnoredSubtree(key)) {
+                recursivelyFindPlaylistRenderers(val, outList, depth + 1);
+            }
+        }
+    } else if (node.is_array()) {
+        for (const auto &item : node) {
+            recursivelyFindPlaylistRenderers(item, outList, depth + 1);
+        }
+    }
+}
+
 AccountChannel parseAccountRenderer(std::string_view type, const nlohmann::json &obj) {
     AccountChannel ch;
     if (type == "activeAccountHeaderRenderer") {
@@ -900,6 +935,358 @@ std::vector<VideoItem> InnerTubeParser::extractVideos(const nlohmann::json &root
     return videos;
 }
 
+std::vector<PlaylistItem> InnerTubeParser::extractPlaylists(const nlohmann::json &root) {
+    std::vector<const nlohmann::json *> renderers;
+    recursivelyFindPlaylistRenderers(root, renderers);
+
+    std::vector<PlaylistItem> playlists;
+    std::unordered_set<std::string> seenIds;
+    playlists.reserve(renderers.size());
+
+    for (const auto *pr : renderers) {
+        if (!pr)
+            continue;
+        PlaylistItem item;
+        if (parsePlaylistRenderer(*pr, item)) {
+            if (!item.id.empty() && !seenIds.contains(item.id)) {
+                seenIds.insert(item.id);
+                playlists.push_back(std::move(item));
+            }
+        }
+    }
+    return playlists;
+}
+
+bool InnerTubeParser::parsePlaylistRenderer(const nlohmann::json &pr, PlaylistItem &outItem) {
+    if (!pr.is_object()) {
+        return false;
+    }
+
+    // Modern lockupViewModel (contentType == "LOCKUP_CONTENT_TYPE_PLAYLIST")
+    if (pr.contains("contentType") && pr["contentType"].is_string() &&
+        pr["contentType"].get<std::string>() == "LOCKUP_CONTENT_TYPE_PLAYLIST") {
+        if (pr.contains("contentId") && pr["contentId"].is_string()) {
+            outItem.id = pr["contentId"].get<std::string>();
+        }
+
+        auto checkPlaylistEndpoints = [&](const nlohmann::json &node) {
+            if (!node.is_object())
+                return;
+            if (node.contains("onTap") && node["onTap"].is_object()) {
+                const auto &ot = node["onTap"];
+                if (ot.contains("innertubeCommand") && ot["innertubeCommand"].is_object()) {
+                    const auto &ic = ot["innertubeCommand"];
+                    if (ic.contains("watchEndpoint") && ic["watchEndpoint"].is_object()) {
+                        if (outItem.id.empty()) {
+                            outItem.id = ic["watchEndpoint"].value("playlistId", "");
+                        }
+                    }
+                    if (ic.contains("browseEndpoint") && ic["browseEndpoint"].is_object()) {
+                        outItem.browseId = ic["browseEndpoint"].value("browseId", "");
+                    }
+                }
+            }
+        };
+
+        checkPlaylistEndpoints(pr);
+        if (const auto *rc = findObject(pr, "rendererContext")) {
+            if (const auto *cc = findObject(*rc, "commandContext")) {
+                checkPlaylistEndpoints(*cc);
+            }
+        }
+
+        if (outItem.browseId.empty() && !outItem.id.empty()) {
+            outItem.browseId = outItem.id.starts_with("VL") ? outItem.id : ("VL" + outItem.id);
+        }
+        if (outItem.id.empty() && !outItem.browseId.empty()) {
+            outItem.id = outItem.browseId.starts_with("VL") ? outItem.browseId.substr(2) : outItem.browseId;
+        }
+
+        if (const auto *meta = findObject(pr, "metadata")) {
+            if (const auto *lmvm = findObject(*meta, "lockupMetadataViewModel")) {
+                if (lmvm->contains("title")) {
+                    outItem.title = extractText((*lmvm)["title"]);
+                }
+                if (const auto *m = findObject(*lmvm, "metadata")) {
+                    if (const auto *cmvm = findObject(*m, "contentMetadataViewModel")) {
+                        if (const auto *rows = findArray(*cmvm, "metadataRows")) {
+                            for (const auto &row : *rows) {
+                                auto checkParts = [&](const nlohmann::json *parts) {
+                                    if (!parts)
+                                        return;
+                                    for (const auto &part : *parts) {
+                                        std::string t = extractText(part.contains("text") ? part["text"] : part);
+                                        if (t.empty())
+                                            continue;
+                                        if (outItem.author.empty()) {
+                                            outItem.author = t;
+                                        } else if (outItem.updatedTime.empty()) {
+                                            outItem.updatedTime = t;
+                                        }
+                                    }
+                                };
+                                checkParts(findArray(row, "parts"));
+                                checkParts(findArray(row, "metadataParts"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (const auto *ci = findObject(pr, "contentImage")) {
+            const nlohmann::json *primaryThumb = nullptr;
+            if (const auto *ctvm = findObject(*ci, "collectionThumbnailViewModel")) {
+                if (const auto *pt = findObject(*ctvm, "primaryThumbnail")) {
+                    primaryThumb = findObject(*pt, "thumbnailViewModel");
+                }
+            } else if (const auto *tvm = findObject(*ci, "thumbnailViewModel")) {
+                primaryThumb = tvm;
+            }
+
+            if (primaryThumb) {
+                outItem.thumbnailUrl = extractBestThumbnail(*primaryThumb, outItem.id);
+                if (const auto *overlays = findArray(*primaryThumb, "overlays")) {
+                    for (const auto &ov : *overlays) {
+                        if (const auto *tbvm = findObject(ov, "thumbnailBadgeViewModel")) {
+                            if (tbvm->contains("text")) {
+                                outItem.videoCountText = extractText((*tbvm)["text"]);
+                            }
+                        }
+                        if (outItem.videoCountText.empty()) {
+                            if (const auto *tots = findObject(ov, "thumbnailOverlayTimeStatusRenderer")) {
+                                if (tots->contains("text")) {
+                                    outItem.videoCountText = extractText((*tots)["text"]);
+                                }
+                            }
+                        }
+                        if (outItem.videoCountText.empty()) {
+                            if (const auto *tobp = findObject(ov, "thumbnailOverlayBottomPanelViewModel")) {
+                                if (tobp->contains("text")) {
+                                    outItem.videoCountText = extractText((*tobp)["text"]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (outItem.thumbnailUrl.empty() && !outItem.id.empty()) {
+            outItem.thumbnailUrl = "https://i.ytimg.com/vi/" + outItem.id + "/mqdefault.jpg";
+        }
+
+        return !outItem.id.empty();
+    }
+
+    // Classic playlistRenderer or gridPlaylistRenderer
+    if (pr.contains("playlistId") && pr["playlistId"].is_string()) {
+        outItem.id = pr["playlistId"].get<std::string>();
+    }
+    if (const auto *ne = findObject(pr, "navigationEndpoint")) {
+        if (const auto *be = findObject(*ne, "browseEndpoint")) {
+            if (auto bid = findString(*be, "browseId"); !bid.empty()) {
+                outItem.browseId = std::string(bid);
+            }
+        }
+    }
+    if (outItem.browseId.empty() && !outItem.id.empty()) {
+        outItem.browseId = outItem.id.starts_with("VL") ? outItem.id : ("VL" + outItem.id);
+    }
+    if (outItem.id.empty() && !outItem.browseId.empty()) {
+        outItem.id = outItem.browseId.starts_with("VL") ? outItem.browseId.substr(2) : outItem.browseId;
+    }
+
+    if (pr.contains("title")) {
+        outItem.title = extractText(pr["title"]);
+    }
+
+    if (pr.contains("shortBylineText")) {
+        outItem.author = extractText(pr["shortBylineText"]);
+    } else if (pr.contains("longBylineText")) {
+        outItem.author = extractText(pr["longBylineText"]);
+    }
+
+    if (pr.contains("videoCountText")) {
+        outItem.videoCountText = extractText(pr["videoCountText"]);
+    } else if (pr.contains("videoCountShortText")) {
+        outItem.videoCountText = extractText(pr["videoCountShortText"]);
+    } else if (pr.contains("thumbnailText")) {
+        outItem.videoCountText = extractText(pr["thumbnailText"]);
+    }
+
+    if (pr.contains("publishedTimeText")) {
+        outItem.updatedTime = extractText(pr["publishedTimeText"]);
+    }
+
+    if (pr.contains("thumbnails")) {
+        outItem.thumbnailUrl = extractBestThumbnail(pr["thumbnails"], outItem.id);
+    } else if (pr.contains("thumbnail")) {
+        outItem.thumbnailUrl = extractBestThumbnail(pr["thumbnail"], outItem.id);
+    } else if (pr.contains("sidebarThumbnails")) {
+        outItem.thumbnailUrl = extractBestThumbnail(pr["sidebarThumbnails"], outItem.id);
+    }
+
+    if (outItem.thumbnailUrl.empty() && !outItem.id.empty()) {
+        outItem.thumbnailUrl = "https://i.ytimg.com/vi/" + outItem.id + "/mqdefault.jpg";
+    }
+
+    return !outItem.id.empty();
+}
+
+bool InnerTubeParser::parsePlaylistHeader(const nlohmann::json &root, PlaylistItem &outDetails) {
+    if (!root.is_object()) {
+        return false;
+    }
+
+    const nlohmann::json *headerNode = nullptr;
+    if (const auto *h = findObject(root, "header")) {
+        headerNode = h;
+    } else {
+        headerNode = &root;
+    }
+
+    // 1. Classic playlistHeaderRenderer
+    std::vector<const nlohmann::json *> classicHeaders;
+    auto findClassic = [&](auto &self, const nlohmann::json &node, int depth) -> void {
+        if (!node.is_object() || depth > 8)
+            return;
+        if (const auto *ph = findObject(node, "playlistHeaderRenderer")) {
+            classicHeaders.push_back(ph);
+            return;
+        }
+        for (const auto &[k, v] : node.items()) {
+            if (v.is_object() && !isIgnoredSubtree(k)) {
+                self(self, v, depth + 1);
+            }
+        }
+    };
+    findClassic(findClassic, *headerNode, 0);
+
+    if (!classicHeaders.empty()) {
+        const auto &ph = *classicHeaders.front();
+        if (ph.contains("playlistId") && ph["playlistId"].is_string()) {
+            if (outDetails.id.empty())
+                outDetails.id = ph["playlistId"].get<std::string>();
+        }
+        if (ph.contains("title")) {
+            std::string t = extractText(ph["title"]);
+            if (!t.empty())
+                outDetails.title = std::move(t);
+        }
+        if (ph.contains("ownerText")) {
+            std::string a = extractText(ph["ownerText"]);
+            if (!a.empty())
+                outDetails.author = std::move(a);
+        }
+        if (ph.contains("numVideosText")) {
+            std::string c = extractText(ph["numVideosText"]);
+            if (!c.empty())
+                outDetails.videoCountText = std::move(c);
+        }
+        if (ph.contains("viewCountText")) {
+            std::string v = extractText(ph["viewCountText"]);
+            if (!v.empty())
+                outDetails.viewCountText = std::move(v);
+        }
+        if (ph.contains("descriptionText")) {
+            std::string d = extractText(ph["descriptionText"]);
+            if (!d.empty())
+                outDetails.description = std::move(d);
+        }
+        if (ph.contains("playlistThumbnail")) {
+            std::string thumb = extractBestThumbnail(ph["playlistThumbnail"], outDetails.id);
+            if (!thumb.empty())
+                outDetails.thumbnailUrl = std::move(thumb);
+        }
+        return !outDetails.title.empty() || !outDetails.id.empty();
+    }
+
+    // 2. Modern pageHeaderRenderer / pageHeaderViewModel
+    std::vector<const nlohmann::json *> modernHeaders;
+    auto findModern = [&](auto &self, const nlohmann::json &node, int depth) -> void {
+        if (!node.is_object() || depth > 8)
+            return;
+        if (const auto *ph = findObject(node, "pageHeaderViewModel")) {
+            modernHeaders.push_back(ph);
+            return;
+        }
+        for (const auto &[k, v] : node.items()) {
+            if (v.is_object() && !isIgnoredSubtree(k)) {
+                self(self, v, depth + 1);
+            }
+        }
+    };
+    findModern(findModern, *headerNode, 0);
+
+    if (!modernHeaders.empty()) {
+        const auto &vm = *modernHeaders.front();
+        if (const auto *dt = findObject(vm, "dynamicTextViewModel")) {
+            if (dt->contains("text")) {
+                std::string t = extractText((*dt)["text"]);
+                if (!t.empty())
+                    outDetails.title = std::move(t);
+            }
+        } else if (vm.contains("title")) {
+            std::string t = extractText(vm["title"]);
+            if (!t.empty())
+                outDetails.title = std::move(t);
+        }
+
+        if (const auto *cm = findObject(vm, "contentMetadataViewModel")) {
+            if (const auto *rows = findArray(*cm, "metadataRows")) {
+                for (const auto &row : *rows) {
+                    if (!row.is_object())
+                        continue;
+                    if (const auto *as = findObject(row, "avatarStackViewModel")) {
+                        if (as->contains("avatarStackText")) {
+                            std::string a = extractText((*as)["avatarStackText"]);
+                            if (!a.empty())
+                                outDetails.author = std::move(a);
+                        }
+                    }
+                    if (const auto *parts = findArray(row, "metadataParts")) {
+                        for (const auto &part : *parts) {
+                            if (!part.is_object())
+                                continue;
+                            if (part.contains("text")) {
+                                std::string txt = extractText(part["text"]);
+                                if (txt.find("video") != std::string::npos) {
+                                    outDetails.videoCountText = txt;
+                                } else if (txt.find("view") != std::string::npos) {
+                                    outDetails.viewCountText = txt;
+                                } else if (txt != "Playlist" && outDetails.updatedTime.empty()) {
+                                    outDetails.updatedTime = txt;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (const auto *dp = findObject(vm, "descriptionPreviewViewModel")) {
+            if (dp->contains("description")) {
+                std::string d = extractText((*dp)["description"]);
+                if (!d.empty())
+                    outDetails.description = std::move(d);
+            }
+        }
+
+        if (const auto *cpi = findObject(vm, "contentPreviewImageViewModel")) {
+            if (cpi->contains("image")) {
+                std::string thumb = extractBestThumbnail((*cpi)["image"], outDetails.id);
+                if (!thumb.empty())
+                    outDetails.thumbnailUrl = std::move(thumb);
+            }
+        }
+
+        return !outDetails.title.empty() || !outDetails.id.empty();
+    }
+
+    return false;
+}
+
 bool InnerTubeParser::parseClassicVideoRenderer(const nlohmann::json &vr, VideoItem &outItem) {
     if (!vr.contains("videoId") || !vr["videoId"].is_string()) {
         return false;
@@ -941,6 +1328,73 @@ bool InnerTubeParser::parseClassicVideoRenderer(const nlohmann::json &vr, VideoI
 
     if (vr.contains("publishedTimeText")) {
         outItem.publishedTime = extractText(vr["publishedTimeText"]);
+    }
+
+    if ((outItem.viewCount.empty() || outItem.publishedTime.empty()) && vr.contains("videoInfo")) {
+        const auto &vi = vr["videoInfo"];
+        if (vi.is_object()) {
+            auto isOnlySeparator = [](std::string_view s) noexcept -> bool {
+                if (s.empty())
+                    return true;
+                for (unsigned char c : s) {
+                    if (std::isalnum(c))
+                        return false;
+                }
+                return true;
+            };
+
+            auto splitAndCollect = [&](std::string_view str, std::vector<std::string> &out) {
+                constexpr std::string_view kBullet = "•";
+                constexpr std::string_view kMiddleDot = "·";
+                size_t pos = str.find(kBullet);
+                size_t delimLen = kBullet.size();
+                if (pos == std::string_view::npos) {
+                    pos = str.find(kMiddleDot);
+                    delimLen = kMiddleDot.size();
+                }
+                if (pos == std::string_view::npos) {
+                    pos = str.find(" - ");
+                    delimLen = 3;
+                }
+
+                if (pos != std::string_view::npos) {
+                    std::string_view p1 = utils::trim(str.substr(0, pos));
+                    std::string_view p2 = utils::trim(str.substr(pos + delimLen));
+                    if (!isOnlySeparator(p1)) {
+                        out.emplace_back(p1);
+                    }
+                    if (!isOnlySeparator(p2)) {
+                        out.emplace_back(p2);
+                    }
+                } else {
+                    std::string_view trimmed = utils::trim(str);
+                    if (!isOnlySeparator(trimmed)) {
+                        out.emplace_back(trimmed);
+                    }
+                }
+            };
+
+            std::vector<std::string> parts;
+            if (vi.contains("runs") && vi["runs"].is_array()) {
+                for (const auto &run : vi["runs"]) {
+                    if (run.is_object() && run.contains("text") && run["text"].is_string()) {
+                        splitAndCollect(run["text"].get_ref<const std::string &>(), parts);
+                    }
+                }
+            } else if (vi.contains("simpleText") && vi["simpleText"].is_string()) {
+                splitAndCollect(vi["simpleText"].get_ref<const std::string &>(), parts);
+            }
+
+            for (const auto &part : parts) {
+                if (outItem.viewCount.empty() &&
+                    (part.find("view") != std::string::npos || part.find("View") != std::string::npos ||
+                     part.find("watching") != std::string::npos || part.find("Watching") != std::string::npos)) {
+                    outItem.viewCount = part;
+                } else if (outItem.publishedTime.empty()) {
+                    outItem.publishedTime = part;
+                }
+            }
+        }
     }
 
     if (vr.contains("descriptionSnippet")) {

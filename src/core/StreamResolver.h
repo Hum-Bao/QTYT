@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,8 +16,12 @@ struct StreamInfo {
     std::string audioItag;        // Extracted audio stream itag (e.g. "140", "251")
 };
 
+class CookieManager;
+
 class StreamResolver {
 public:
+    // Register active CookieManager so StreamResolver can flush before invoking yt-dlp and merge rotated cookies after yt-dlp runs
+    static void setCookieManager(std::weak_ptr<CookieManager> cookieManager);
     // Resolve YouTube video stream URLs using yt-dlp with caching and cancellation
     [[nodiscard]] static bool resolve(std::string_view videoIdOrUrl, std::string_view quality, StreamInfo &outInfo,
                                       std::string &outError, std::string_view cookieFilePath = {},

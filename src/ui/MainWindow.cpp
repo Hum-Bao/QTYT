@@ -13,9 +13,11 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QPointer>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QShortcut>
 #include <QStatusBar>
@@ -73,6 +75,8 @@ MainWindow::MainWindow(QWidget *parent)
                  std::string_view(pageIdBytes.constData(), pageIdBytes.size()), savedAuthUser);
     }
 
+    StreamResolver::setCookieManager(m_cookieManager);
+
     setupUi();
 
     // Restore window geometry, state, and player preferences from AppSettings
@@ -105,6 +109,9 @@ MainWindow::~MainWindow() {
         m_playerWidget->stopPlayback();
     }
     m_asyncPool.waitForDone();
+    if (m_cookieManager) {
+        m_cookieManager->flushIfDirty();
+    }
     AppSettings::instance().sync();
 }
 
@@ -129,6 +136,23 @@ void MainWindow::setupUi() {
     auto *topBarLayout = new QHBoxLayout(m_topBarWidget);
     topBarLayout->setContentsMargins(16, 0, 16, 0);
     topBarLayout->setSpacing(10);
+
+    // 0. Hamburger Menu Button (sits to the left of QTYT logo)
+    m_menuButton = new QPushButton(m_topBarWidget);
+    m_menuButton->setObjectName("menuButton");
+    m_menuButton->setFixedSize(40, 40);
+    m_menuButton->setIcon(lightyt::ui::icons::menu(QColor(0xf1, 0xf1, 0xf1), 20));
+    m_menuButton->setIconSize(QSize(20, 20));
+    m_menuButton->setCursor(Qt::PointingHandCursor);
+    m_menuButton->setToolTip("Guide");
+    m_menuButton->setStyleSheet(
+        "QPushButton {"
+        "  background-color: transparent; border: none; border-radius: 20px; padding: 0px;"
+        "}"
+        "QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); }"
+        "QPushButton:pressed { background-color: rgba(255, 255, 255, 0.2); }");
+    connect(m_menuButton, &QPushButton::clicked, this, &MainWindow::onMenuButtonClicked);
+    topBarLayout->addWidget(m_menuButton);
 
     // 1. QTYT Brand Button (Text-only brand pill button navigating to Home)
     auto *brandButton = new QPushButton("QTYT", m_topBarWidget);
@@ -246,14 +270,80 @@ void MainWindow::setupUi() {
     mainLayout->addWidget(m_topBarWidget);
 
     // Center Stacked Area: Feed (Index 0) vs. Player (Index 1)
-    m_stackedWidget = new QStackedWidget(this);
+    auto *bodyContainer = new QWidget(centralWidget);
+    auto *bodyLayout = new QHBoxLayout(bodyContainer);
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(0);
 
-    m_feedView = new FeedView(this);
+    // Persistent Navigation Sidebar (Docked on left of content area)
+    m_persistentSidebar = new lightyt::ui::NavSidebar(bodyContainer);
+    m_persistentSidebar->addEntry("home", "Home", lightyt::ui::icons::home(QColor(0xf1, 0xf1, 0xf1), 20),
+                                  lightyt::ui::NavSectionId::Primary);
+    m_persistentSidebar->addEntry("subscriptions", "Subscriptions",
+                                  lightyt::ui::icons::subscriptions(QColor(0xf1, 0xf1, 0xf1), 20),
+                                  lightyt::ui::NavSectionId::Primary);
+    m_persistentSidebar->addEntry("history", "History", lightyt::ui::icons::history(QColor(0xf1, 0xf1, 0xf1), 20),
+                                  lightyt::ui::NavSectionId::You);
+    m_persistentSidebar->addEntry("playlists", "Playlists", lightyt::ui::icons::playlists(QColor(0xf1, 0xf1, 0xf1), 20),
+                                  lightyt::ui::NavSectionId::You);
+    m_persistentSidebar->addEntry("watch_later", "Watch later",
+                                  lightyt::ui::icons::watchLater(QColor(0xf1, 0xf1, 0xf1), 20),
+                                  lightyt::ui::NavSectionId::You);
+    m_persistentSidebar->addEntry("liked_videos", "Liked videos",
+                                  lightyt::ui::icons::thumbUp(QColor(0xf1, 0xf1, 0xf1), false, 20),
+                                  lightyt::ui::NavSectionId::You);
+    m_persistentSidebar->setActiveEntry("home");
+    m_persistentSidebar->setMinimal(AppSettings::instance().getSidebarMinimal());
+    connect(m_persistentSidebar, &lightyt::ui::NavSidebar::entryClicked, this, &MainWindow::onDrawerEntryClicked);
+    bodyLayout->addWidget(m_persistentSidebar);
+
+    m_stackedWidget = new QStackedWidget(bodyContainer);
+
+    m_feedContainer = new QWidget(this);
+    auto *feedLayout = new QVBoxLayout(m_feedContainer);
+    feedLayout->setContentsMargins(0, 0, 0, 0);
+    feedLayout->setSpacing(0);
+
+    // Contextual Playlist Navigation Header Bar (appears when viewing a playlist's videos)
+    m_playlistHeaderWidget = new QWidget(m_feedContainer);
+    m_playlistHeaderWidget->setObjectName("playlistHeaderWidget");
+    m_playlistHeaderWidget->setFixedHeight(52);
+    m_playlistHeaderWidget->setStyleSheet(
+        "#playlistHeaderWidget { background-color: #0f0f0f; border-bottom: 1px solid #222222; }");
+    auto *playlistHeaderLayout = new QHBoxLayout(m_playlistHeaderWidget);
+    playlistHeaderLayout->setContentsMargins(16, 0, 16, 0);
+    playlistHeaderLayout->setSpacing(14);
+
+    m_playlistBackButton = new QPushButton("← Back to Playlists", m_playlistHeaderWidget);
+    m_playlistBackButton->setFixedHeight(34);
+    m_playlistBackButton->setCursor(Qt::PointingHandCursor);
+    m_playlistBackButton->setStyleSheet(
+        "QPushButton {"
+        "  background-color: #272727; color: #f1f1f1; border: 1px solid rgba(255, 255, 255, 0.1);"
+        "  border-radius: 17px; padding: 0px 16px; font-size: 13px; font-weight: 500;"
+        "}"
+        "QPushButton:hover { background-color: #3f3f3f; color: #ffffff; }"
+        "QPushButton:pressed { background-color: #4f4f4f; }");
+    connect(m_playlistBackButton, &QPushButton::clicked, this, &MainWindow::onBackToPlaylistsClicked);
+    playlistHeaderLayout->addWidget(m_playlistBackButton);
+
+    m_playlistTitleLabel = new QLabel(m_playlistHeaderWidget);
+    m_playlistTitleLabel->setStyleSheet(
+        "color: #f1f1f1; font-size: 16px; font-weight: 600; border: none; background: transparent;");
+    playlistHeaderLayout->addWidget(m_playlistTitleLabel);
+    playlistHeaderLayout->addStretch(1);
+
+    m_playlistHeaderWidget->hide();
+    feedLayout->addWidget(m_playlistHeaderWidget);
+
+    m_feedView = new FeedView(m_feedContainer);
     m_feedView->setHideShorts(hideShorts);
     connect(m_feedView, &FeedView::videoSelected, this, &MainWindow::onVideoSelected);
     connect(m_feedView, &FeedView::videoHovered, this, &MainWindow::onVideoHovered);
     connect(m_feedView, &FeedView::requestMoreVideos, this, &MainWindow::onLoadMoreVideosRequested);
-    m_stackedWidget->addWidget(m_feedView);
+    feedLayout->addWidget(m_feedView, 1);
+
+    m_stackedWidget->addWidget(m_feedContainer);
 
     m_playerWidget = new PlayerWidget(this);
     m_playerWidget->setYouTubeClient(m_client.get());
@@ -261,7 +351,16 @@ void MainWindow::setupUi() {
     connect(m_playerWidget, &PlayerWidget::fullscreenToggleRequested, this, &MainWindow::onFullscreenToggleRequested);
     m_stackedWidget->addWidget(m_playerWidget);
 
-    mainLayout->addWidget(m_stackedWidget, 1);
+    m_playlistPageWidget = new PlaylistPageWidget(this);
+    connect(m_playlistPageWidget, &PlaylistPageWidget::backRequested, this, &MainWindow::onPlaylistPageBackRequested);
+    connect(m_playlistPageWidget, &PlaylistPageWidget::videoSelected, this, &MainWindow::onPlaylistVideoSelected);
+    connect(m_playlistPageWidget, &PlaylistPageWidget::requestMoreVideos, this, &MainWindow::onPlaylistRequestMoreVideos);
+    m_stackedWidget->addWidget(m_playlistPageWidget);
+
+    connect(m_feedView, &FeedView::viewFullPlaylistRequested, this, &MainWindow::openPlaylistPage);
+
+    bodyLayout->addWidget(m_stackedWidget, 1);
+    mainLayout->addWidget(bodyContainer, 1);
 
     // Window-scoped keyboard shortcuts with text input and active page guards
     auto *shortcutTheater = new QShortcut(QKeySequence(Qt::Key_T), this);
@@ -298,6 +397,27 @@ void MainWindow::setupUi() {
             m_searchInput->selectAll();
         }
     });
+
+    // 6. Sliding Left Navigation Drawer (240px overlay with dimmed backdrop)
+    m_leftDrawer = new lightyt::ui::LeftNavDrawer(this);
+    m_leftDrawer->addEntry("home", "Home", lightyt::ui::icons::home(QColor(0xf1, 0xf1, 0xf1), 20),
+                           lightyt::ui::NavSectionId::Primary);
+    m_leftDrawer->addEntry("subscriptions", "Subscriptions",
+                           lightyt::ui::icons::subscriptions(QColor(0xf1, 0xf1, 0xf1), 20),
+                           lightyt::ui::NavSectionId::Primary);
+    m_leftDrawer->addEntry("history", "History", lightyt::ui::icons::history(QColor(0xf1, 0xf1, 0xf1), 20),
+                           lightyt::ui::NavSectionId::You);
+    m_leftDrawer->addEntry("playlists", "Playlists", lightyt::ui::icons::playlists(QColor(0xf1, 0xf1, 0xf1), 20),
+                           lightyt::ui::NavSectionId::You);
+    m_leftDrawer->addEntry("watch_later", "Watch later",
+                           lightyt::ui::icons::watchLater(QColor(0xf1, 0xf1, 0xf1), 20),
+                           lightyt::ui::NavSectionId::You);
+    m_leftDrawer->addEntry("liked_videos", "Liked videos",
+                           lightyt::ui::icons::thumbUp(QColor(0xf1, 0xf1, 0xf1), false, 20),
+                           lightyt::ui::NavSectionId::You);
+    m_leftDrawer->setActiveEntry("home");
+
+    connect(m_leftDrawer, &lightyt::ui::LeftNavDrawer::entryClicked, this, &MainWindow::onDrawerEntryClicked);
 
     statusBar()->setStyleSheet(
         "QStatusBar { background-color: #0f0f0f; color: #717171; border-top: 1px solid #1f1f1f; font-size: 11px; }");
@@ -381,21 +501,43 @@ void MainWindow::updateNavTabs(NavTab tab) {
         "}"
         "QPushButton:hover { background-color: #3f3f3f; }";
 
+    m_activeNavTab = tab;
+    QString entryId;
     if (tab == NavTab::Home) {
+        entryId = "home";
         m_homeButton->setIcon(lightyt::ui::icons::home(QColor(0x0f, 0x0f, 0x0f), 18));
         m_subsButton->setIcon(lightyt::ui::icons::subscriptions(QColor(0xf1, 0xf1, 0xf1), 18));
         m_homeButton->setStyleSheet(activeChip);
         m_subsButton->setStyleSheet(inactiveChip);
     } else if (tab == NavTab::Subscriptions) {
+        entryId = "subscriptions";
         m_homeButton->setIcon(lightyt::ui::icons::home(QColor(0xf1, 0xf1, 0xf1), 18));
         m_subsButton->setIcon(lightyt::ui::icons::subscriptions(QColor(0x0f, 0x0f, 0x0f), 18));
         m_homeButton->setStyleSheet(inactiveChip);
         m_subsButton->setStyleSheet(activeChip);
     } else {
+        if (tab == NavTab::History) {
+            entryId = "history";
+        } else if (tab == NavTab::Playlists) {
+            entryId = "playlists";
+        } else if (tab == NavTab::WatchLater) {
+            entryId = "watch_later";
+        } else if (tab == NavTab::LikedVideos) {
+            entryId = "liked_videos";
+        } else {
+            entryId = "";
+        }
         m_homeButton->setIcon(lightyt::ui::icons::home(QColor(0xf1, 0xf1, 0xf1), 18));
         m_subsButton->setIcon(lightyt::ui::icons::subscriptions(QColor(0xf1, 0xf1, 0xf1), 18));
         m_homeButton->setStyleSheet(inactiveChip);
         m_subsButton->setStyleSheet(inactiveChip);
+    }
+
+    if (m_persistentSidebar) {
+        m_persistentSidebar->setActiveEntry(entryId);
+    }
+    if (m_leftDrawer) {
+        m_leftDrawer->setActiveEntry(entryId);
     }
 }
 
@@ -408,6 +550,9 @@ void MainWindow::loadHomeFeedAsync() {
 }
 
 void MainWindow::loadHomeFeedAsync(bool switchToFeed) {
+    if (m_playlistHeaderWidget) {
+        m_playlistHeaderWidget->hide();
+    }
     if (switchToFeed) {
         updateNavTabs(NavTab::Home);
     }
@@ -467,13 +612,24 @@ void MainWindow::onCookiesUpdated() {
     loadHomeFeedAsync(/*switchToFeed=*/!isWatchingVideo);
 }
 
-void MainWindow::onSubscriptionsClicked() {
+bool MainWindow::requireAuthForFeature(const QString &featureName) {
     if (!m_cookieManager || !m_cookieManager->hasAuth()) {
         QMessageBox::information(
             this, "Authentication Required",
-            "Viewing Subscriptions requires logging into YouTube with your cookies.txt.\n\n"
-            "Please click the 'Sign in' button in the top right to paste or load your cookies.");
+            QString("Viewing %1 requires logging into YouTube with your cookies.txt.\n\n"
+                    "Please click the 'Sign in' button in the top right to paste or load your cookies.")
+                .arg(featureName));
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::onSubscriptionsClicked() {
+    if (!requireAuthForFeature("Subscriptions")) {
         return;
+    }
+    if (m_playlistHeaderWidget) {
+        m_playlistHeaderWidget->hide();
     }
     if (m_stackedWidget && m_stackedWidget->currentIndex() == 1 && m_activeNavTab == NavTab::Subscriptions) {
         onBackToFeedRequested();
@@ -483,8 +639,83 @@ void MainWindow::onSubscriptionsClicked() {
     loadFeedAsync("FEsubscriptions", "Subscriptions Feed");
 }
 
+void MainWindow::loadPlaylistsAsync() {
+    if (m_playlistHeaderWidget) {
+        m_playlistHeaderWidget->hide();
+    }
+    if (m_leftDrawer) {
+        m_leftDrawer->closeDrawer();
+    }
+    if (m_persistentSidebar) {
+        m_persistentSidebar->show();
+    }
+    if (m_playerWidget) {
+        m_playerWidget->stopPlayback();
+    }
+    m_lastViewSource = ViewSource::Feed;
+    m_stackedWidget->setCurrentWidget(m_feedContainer);
+
+    updateNavTabs(NavTab::Playlists);
+    m_isLoadingFeed.store(true);
+    setStatusText("Fetching Playlists...");
+
+    runAsync<PlaylistsTaskResult>(
+        [this]() {
+            std::string err;
+            auto plRes = m_client->fetchPlaylistsWithContinuation(err);
+            return PlaylistsTaskResult{std::move(plRes), std::move(err)};
+        },
+        [this](PlaylistsTaskResult res) {
+            m_isLoadingFeed.store(false);
+            if (!res.error.empty()) {
+                setStatusText(QString("Error: %1").arg(QString::fromUtf8(res.error.c_str())));
+                LOG_WARN("[MainWindow] Playlists error: {}", res.error);
+            } else {
+                m_currentPlaylists = res.result.playlists;
+                m_playlistsContinuationToken = res.result.continuationToken;
+                m_currentContinuationToken = res.result.continuationToken;
+
+                std::vector<VideoItem> items;
+                items.reserve(res.result.playlists.size());
+                for (const auto &pl : res.result.playlists) {
+                    items.push_back(pl.toVideoItem());
+                }
+
+                if (m_feedView) {
+                    m_feedView->setVideos(items);
+                }
+                setStatusText(QString("Loaded %1 playlists").arg(items.size()));
+            }
+        });
+}
+
+void MainWindow::onBackToPlaylistsClicked() {
+    if (m_playlistHeaderWidget) {
+        m_playlistHeaderWidget->hide();
+    }
+    updateNavTabs(NavTab::Playlists);
+
+    std::vector<VideoItem> items;
+    items.reserve(m_currentPlaylists.size());
+    for (const auto &pl : m_currentPlaylists) {
+        items.push_back(pl.toVideoItem());
+    }
+
+    m_currentContinuationToken = m_playlistsContinuationToken;
+    if (m_feedView) {
+        m_feedView->setVideos(items);
+    }
+    setStatusText(QString("Loaded %1 playlists").arg(items.size()));
+}
+
 void MainWindow::loadFeedAsync(const std::string &browseId, const QString &modeName, bool switchToFeed) {
     if (switchToFeed) {
+        if (m_leftDrawer) {
+            m_leftDrawer->closeDrawer();
+        }
+        if (m_persistentSidebar) {
+            m_persistentSidebar->show();
+        }
         if (m_playerWidget) {
             m_playerWidget->stopPlayback();
         }
@@ -526,6 +757,46 @@ void MainWindow::onLoadMoreVideosRequested() {
         return;
     }
 
+    if (m_activeNavTab == NavTab::Playlists && (!m_playlistHeaderWidget || !m_playlistHeaderWidget->isVisible())) {
+        m_isLoadingContinuation.store(true);
+        std::string token = m_currentContinuationToken;
+        setStatusText("Loading more playlists...");
+
+        uint64_t gen = m_feedGeneration;
+        auto *watcher = new QFutureWatcher<PlaylistsTaskResult>(this);
+        connect(watcher, &QFutureWatcher<PlaylistsTaskResult>::finished, this, [this, watcher, gen]() {
+            m_isLoadingContinuation.store(false);
+            if (gen == m_feedGeneration) {
+                auto res = watcher->result();
+                if (!res.error.empty()) {
+                    setStatusText(QString("Error loading more playlists: %1").arg(QString::fromUtf8(res.error.c_str())));
+                } else {
+                    m_playlistsContinuationToken = res.result.continuationToken;
+                    m_currentContinuationToken = res.result.continuationToken;
+                    m_currentPlaylists.insert(m_currentPlaylists.end(), res.result.playlists.begin(),
+                                              res.result.playlists.end());
+
+                    std::vector<VideoItem> items;
+                    items.reserve(res.result.playlists.size());
+                    for (const auto &pl : res.result.playlists) {
+                        items.push_back(pl.toVideoItem());
+                    }
+                    if (m_feedView) {
+                        m_feedView->appendVideos(items);
+                    }
+                    setStatusText(QString("Loaded %1 playlists total").arg(m_currentPlaylists.size()));
+                }
+            }
+            watcher->deleteLater();
+        });
+        watcher->setFuture(QtConcurrent::run(&m_asyncPool, [this, token]() {
+            std::string err;
+            auto plRes = m_client->fetchPlaylistsContinuation(token, err);
+            return PlaylistsTaskResult{std::move(plRes), std::move(err)};
+        }));
+        return;
+    }
+
     m_isLoadingContinuation.store(true);
     std::string token = m_currentContinuationToken;
     auto kind = (m_activeNavTab == NavTab::Search) ? ContinuationKind::Search : ContinuationKind::Browse;
@@ -564,11 +835,20 @@ void MainWindow::onSearchSubmitted() {
 }
 
 void MainWindow::executeSearchAsync(const QString &query) {
+    if (m_playlistHeaderWidget) {
+        m_playlistHeaderWidget->hide();
+    }
     if (m_playerWidget) {
         m_playerWidget->stopPlayback();
     }
     updateNavTabs(NavTab::Search);
 
+    if (m_leftDrawer) {
+        m_leftDrawer->closeDrawer();
+    }
+    if (m_persistentSidebar) {
+        m_persistentSidebar->show();
+    }
     m_isLoadingFeed.store(true);
     setStatusText(QString("Searching for \"%1\"...").arg(query));
     m_stackedWidget->setCurrentIndex(0);
@@ -618,10 +898,22 @@ void MainWindow::onHomeRefreshClicked() {
 }
 
 void MainWindow::onVideoSelected(const VideoItem &item) {
+    if (item.isPlaylist) {
+        openPlaylistPage(item);
+        return;
+    }
+
+    m_lastViewSource = ViewSource::Feed;
     if (m_feedView) {
         m_feedView->cancelPendingThumbnails();
     }
-    m_stackedWidget->setCurrentIndex(1);
+    if (m_leftDrawer) {
+        m_leftDrawer->closeDrawer();
+    }
+    if (m_persistentSidebar) {
+        m_persistentSidebar->hide();
+    }
+    m_stackedWidget->setCurrentWidget(m_playerWidget);
     if (m_client) {
         m_client->recordWatchHistory(item.id);
     }
@@ -632,20 +924,149 @@ void MainWindow::onVideoSelected(const VideoItem &item) {
     setStatusText(QString("Playing: %1").arg(QString::fromUtf8(item.title.c_str())));
 }
 
-void MainWindow::onBackToFeedRequested() {
-    if (windowState().testFlag(Qt::WindowFullScreen)) {
-        onFullscreenToggleRequested();
+void MainWindow::openPlaylistPage(const VideoItem &item) {
+    if (m_feedView) {
+        m_feedView->cancelPendingThumbnails();
+    }
+    if (m_leftDrawer) {
+        m_leftDrawer->closeDrawer();
+    }
+    if (m_persistentSidebar) {
+        m_persistentSidebar->show();
     }
     if (m_playerWidget) {
         m_playerWidget->stopPlayback();
     }
-    m_stackedWidget->setCurrentIndex(0);
+    m_lastViewSource = ViewSource::Playlist;
+    if (m_playlistPageWidget) {
+        m_playlistPageWidget->setPlaylist(item);
+        m_stackedWidget->setCurrentWidget(m_playlistPageWidget);
+    }
+    setStatusText(QString("Loading playlist: %1...").arg(QString::fromUtf8(item.title.c_str())));
+
+    std::string browseId = item.playlistBrowseId.empty() ? ("VL" + item.id) : item.playlistBrowseId;
+
+    m_isLoadingFeed.store(true);
+    runAsync<PlaylistFeedTaskResult>(
+        [this, browseId]() {
+            PlaylistFeedTaskResult res;
+            if (m_client) {
+                res.result = m_client->fetchPlaylistFeedWithContinuation(browseId, res.error);
+            }
+            return res;
+        },
+        [this, item, browseId](PlaylistFeedTaskResult res) {
+            m_isLoadingFeed.store(false);
+            if (!res.error.empty()) {
+                setStatusText(QString("Playlist error: %1").arg(QString::fromUtf8(res.error.c_str())));
+            } else {
+                m_currentContinuationToken = res.result.feed.continuationToken;
+                if (m_playlistPageWidget) {
+                    if (!res.result.playlist.title.empty() || !res.result.playlist.videoCountText.empty()) {
+                        m_playlistPageWidget->setPlaylistDetails(res.result.playlist);
+                    }
+                    m_playlistPageWidget->setVideos(res.result.feed.videos);
+                }
+                if (!res.result.feed.videos.empty() && !res.result.feed.videos[0].id.empty()) {
+                    StreamResolver::prefetch(res.result.feed.videos[0].id,
+                                             AppSettings::instance().getQuality().toStdString(),
+                                             m_cookieManager ? m_cookieManager->getCookieFilePath() : "",
+                                             AppSettings::instance().getAllowAv1());
+                }
+                setStatusText(QString("Loaded playlist \"%1\" (%2 videos)")
+                                  .arg(QString::fromUtf8(item.title.c_str()))
+                                  .arg(res.result.feed.videos.size()));
+            }
+        });
+}
+
+void MainWindow::onPlaylistPageBackRequested() {
+    if (m_leftDrawer) {
+        m_leftDrawer->closeDrawer();
+    }
+    if (m_persistentSidebar) {
+        m_persistentSidebar->show();
+    }
+    m_stackedWidget->setCurrentWidget(m_feedContainer);
+    m_lastViewSource = ViewSource::Feed;
+    setStatusText("Ready");
+}
+
+void MainWindow::onPlaylistVideoSelected(const VideoItem &item) {
+    m_lastViewSource = ViewSource::Playlist;
+    if (m_feedView) {
+        m_feedView->cancelPendingThumbnails();
+    }
+    if (m_leftDrawer) {
+        m_leftDrawer->closeDrawer();
+    }
+    if (m_persistentSidebar) {
+        m_persistentSidebar->hide();
+    }
+    m_stackedWidget->setCurrentWidget(m_playerWidget);
+    if (m_client) {
+        m_client->recordWatchHistory(item.id);
+    }
+    m_playerWidget->playVideo(item, AppSettings::instance().getQuality(),
+                              m_cookieManager ? m_cookieManager->getCookieFilePath() : "",
+                              AppSettings::instance().getAllowAv1());
+    setStatusText(QString("Playing: %1").arg(QString::fromUtf8(item.title.c_str())));
+}
+
+void MainWindow::onPlaylistRequestMoreVideos() {
+    if (m_currentContinuationToken.empty() || m_isLoadingContinuation.load())
+        return;
+    m_isLoadingContinuation.store(true);
+    std::string token = m_currentContinuationToken;
+    runAsync<FeedTaskResult>(
+        [this, token]() {
+            FeedTaskResult res;
+            if (m_client) {
+                res.result = m_client->fetchContinuation(token, ContinuationKind::Browse, res.error);
+            }
+            return res;
+        },
+        [this](FeedTaskResult res) {
+            m_isLoadingContinuation.store(false);
+            if (res.error.empty()) {
+                m_currentContinuationToken = res.result.continuationToken;
+                if (m_playlistPageWidget) {
+                    m_playlistPageWidget->appendVideos(res.result.videos);
+                }
+            }
+        });
+}
+
+void MainWindow::onBackToFeedRequested() {
+    if (windowState().testFlag(Qt::WindowFullScreen)) {
+        onFullscreenToggleRequested();
+    }
+    if (m_leftDrawer) {
+        m_leftDrawer->closeDrawer();
+    }
+    if (m_persistentSidebar) {
+        m_persistentSidebar->show();
+    }
+    if (m_playerWidget) {
+        m_playerWidget->stopPlayback();
+    }
+    if (m_lastViewSource == ViewSource::Playlist && m_playlistPageWidget) {
+        m_stackedWidget->setCurrentWidget(m_playlistPageWidget);
+    } else {
+        m_stackedWidget->setCurrentWidget(m_feedContainer);
+    }
     setStatusText("Ready");
 }
 
 void MainWindow::onFullscreenToggleRequested() {
     const bool isCurrentlyFullScreen = windowState().testFlag(Qt::WindowFullScreen);
     if (!isCurrentlyFullScreen) {
+        if (m_leftDrawer) {
+            m_leftDrawer->closeDrawer();
+        }
+        if (m_persistentSidebar) {
+            m_persistentSidebar->hide();
+        }
         m_wasMaximizedBeforeFullscreen = isMaximized();
         m_prevGeometry = m_wasMaximizedBeforeFullscreen ? normalGeometry() : geometry();
         m_isFullscreen = true;
@@ -669,6 +1090,11 @@ void MainWindow::onFullscreenToggleRequested() {
         if (statusBar()) {
             statusBar()->show();
         }
+        if (m_stackedWidget && m_stackedWidget->currentWidget() != m_playerWidget) {
+            if (m_persistentSidebar) {
+                m_persistentSidebar->show();
+            }
+        }
 
         if (m_wasMaximizedBeforeFullscreen) {
             showMaximized();
@@ -691,6 +1117,96 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     if (m_playerWidget) {
         AppSettings::instance().setVolume(m_playerWidget->getVolume());
     }
+    if (m_cookieManager) {
+        m_cookieManager->flushIfDirty();
+    }
     AppSettings::instance().sync();
     QMainWindow::closeEvent(event);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event) {
+    QMainWindow::resizeEvent(event);
+    if (m_leftDrawer) {
+        m_leftDrawer->syncGeometry();
+    }
+}
+
+void MainWindow::onMenuButtonClicked() {
+    if (m_stackedWidget && m_stackedWidget->currentWidget() == m_playerWidget) {
+        if (m_leftDrawer) {
+            m_leftDrawer->toggleDrawer();
+        }
+    } else if (m_persistentSidebar) {
+        m_persistentSidebar->toggleMinimal();
+        AppSettings::instance().setSidebarMinimal(m_persistentSidebar->isMinimal());
+        AppSettings::instance().sync();
+    }
+}
+
+void MainWindow::onDrawerEntryClicked(const QString &id) {
+    if (m_persistentSidebar) {
+        m_persistentSidebar->setActiveEntry(id);
+    }
+    if (m_leftDrawer) {
+        m_leftDrawer->setActiveEntry(id);
+    }
+    if (id == "home") {
+        if (m_playlistHeaderWidget) {
+            m_playlistHeaderWidget->hide();
+        }
+        onHomeRefreshClicked();
+    } else if (id == "subscriptions") {
+        if (m_playlistHeaderWidget) {
+            m_playlistHeaderWidget->hide();
+        }
+        onSubscriptionsClicked();
+    } else if (id == "history") {
+        if (m_playlistHeaderWidget) {
+            m_playlistHeaderWidget->hide();
+        }
+        if (!requireAuthForFeature("Watch History")) {
+            return;
+        }
+        if (m_stackedWidget && m_stackedWidget->currentIndex() == 1 && m_activeNavTab == NavTab::History) {
+            onBackToFeedRequested();
+            return;
+        }
+        updateNavTabs(NavTab::History);
+        loadFeedAsync("FEhistory", "Watch History");
+    } else if (id == "playlists") {
+        if (!requireAuthForFeature("Playlists")) {
+            return;
+        }
+        if (m_stackedWidget && m_stackedWidget->currentIndex() == 1 && m_activeNavTab == NavTab::Playlists) {
+            onBackToFeedRequested();
+            return;
+        }
+        loadPlaylistsAsync();
+    } else if (id == "watch_later") {
+        if (m_playlistHeaderWidget) {
+            m_playlistHeaderWidget->hide();
+        }
+        if (!requireAuthForFeature("Watch Later")) {
+            return;
+        }
+        if (m_stackedWidget && m_stackedWidget->currentIndex() == 1 && m_activeNavTab == NavTab::WatchLater) {
+            onBackToFeedRequested();
+            return;
+        }
+        updateNavTabs(NavTab::WatchLater);
+        loadFeedAsync("VLWL", "Watch Later");
+    } else if (id == "liked_videos") {
+        if (m_playlistHeaderWidget) {
+            m_playlistHeaderWidget->hide();
+        }
+        if (!requireAuthForFeature("Liked Videos")) {
+            return;
+        }
+        if (m_stackedWidget && m_stackedWidget->currentIndex() == 1 && m_activeNavTab == NavTab::LikedVideos) {
+            onBackToFeedRequested();
+            return;
+        }
+        updateNavTabs(NavTab::LikedVideos);
+        loadFeedAsync("VLLL", "Liked Videos");
+    }
 }

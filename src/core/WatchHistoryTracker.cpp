@@ -179,6 +179,9 @@ void WatchHistoryTracker::recordWatchHistory(std::string_view videoId) {
                 if (!playbackUrl.empty()) {
                     std::string fullPlaybackUrl = buildPlaybackBeaconUrl(playbackUrl, cpn);
                     LOG_DEBUG("[WatchHistoryTracker] Pinging playback tracking beacon: {}", fullPlaybackUrl);
+                    if (m_headerBuilder) {
+                        headers = m_headerBuilder(true, referer);
+                    }
                     HttpResponse statsRes = getInnerTube(fullPlaybackUrl, headers, 5);
                     LOG_INFO("[WatchHistoryTracker] Playback tracking beacon pinged (HTTP {})", statsRes.statusCode);
                 }

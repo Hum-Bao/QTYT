@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QRect>
 #include <QSize>
 #include <QStyledItemDelegate>
 
@@ -8,7 +9,8 @@ class VideoCardDelegate : public QStyledItemDelegate {
 public:
     enum class CardLayoutMode {
         Grid,
-        CompactHorizontal
+        CompactHorizontal,
+        Playlist
     };
 
     explicit VideoCardDelegate(QObject *parent = nullptr);
@@ -18,6 +20,8 @@ public:
 
     void setCardSize(const QSize &size) noexcept { m_cardSize = size; }
     [[nodiscard]] QSize cardSize() const noexcept { return m_cardSize; }
+
+    [[nodiscard]] static QRect getPlaylistButtonRect(const QRect &itemRect);
 
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override;
 

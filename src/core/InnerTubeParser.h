@@ -14,6 +14,15 @@ public:
     // Extract video items from any InnerTube JSON response tree (pruned traversal)
     [[nodiscard]] static std::vector<VideoItem> extractVideos(const nlohmann::json &root);
 
+    // Extract playlist items from any InnerTube JSON response tree (e.g. FEplaylist_aggregation)
+    [[nodiscard]] static std::vector<PlaylistItem> extractPlaylists(const nlohmann::json &root);
+
+    // Parse an individual playlist renderer / modern lockupViewModel
+    [[nodiscard]] static bool parsePlaylistRenderer(const nlohmann::json &pr, PlaylistItem &outItem);
+
+    // Parse playlist header details (title, author, video count, view count, description, thumbnail) from browse response
+    [[nodiscard]] static bool parsePlaylistHeader(const nlohmann::json &root, PlaylistItem &outDetails);
+
     // Extract continuation token from any InnerTube JSON response tree
     [[nodiscard]] static std::string extractContinuationToken(const nlohmann::json &root);
 

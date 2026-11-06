@@ -4,11 +4,12 @@
 #include "../core/YouTubeClient.h"
 #include "CookieDialog.h"
 #include "FeedView.h"
+#include "LeftNavDrawer.h"
+#include "NavSidebar.h"
 #include "PlayerWidget.h"
+#include "PlaylistPageWidget.h"
 
-#include <QComboBox>
 #include <QFutureWatcher>
-#include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QPushButton>
@@ -21,9 +22,21 @@
 #include <string>
 
 class QKeyEvent;
+class QLabel;
+class QResizeEvent;
 
 struct FeedTaskResult {
     FeedResult result;
+    std::string error;
+};
+
+struct PlaylistsTaskResult {
+    PlaylistsResult result;
+    std::string error;
+};
+
+struct PlaylistFeedTaskResult {
+    PlaylistFeedResult result;
     std::string error;
 };
 
@@ -46,9 +59,16 @@ private slots:
     void onLoadMoreVideosRequested();
     void onFullscreenToggleRequested();
     void onShortsFilterToggled();
+    void onMenuButtonClicked();
+    void onDrawerEntryClicked(const QString &id);
+    void onBackToPlaylistsClicked();
+    void onPlaylistPageBackRequested();
+    void onPlaylistVideoSelected(const VideoItem &item);
+    void onPlaylistRequestMoreVideos();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     template<typename T, typename Func>
@@ -66,8 +86,12 @@ private:
 
     bool isTextInputFocused() const;
     void updateShortsButtonUi();
-    enum class NavTab { Home, Subscriptions, Search };
+    [[nodiscard]] bool requireAuthForFeature(const QString &featureName);
+    enum class NavTab { Home, Subscriptions, History, Playlists, WatchLater, LikedVideos, Search };
+    enum class ViewSource { Feed, Playlist };
+
     NavTab m_activeNavTab = NavTab::Home;
+    ViewSource m_lastViewSource = ViewSource::Feed;
 
     std::shared_ptr<CookieManager> m_cookieManager;
     std::unique_ptr<YouTubeClient> m_client;
@@ -82,6 +106,7 @@ private:
     bool m_wasMaximizedBeforeFullscreen = false;
 
     QWidget *m_topBarWidget = nullptr;
+    QPushButton *m_menuButton = nullptr;
     QLineEdit *m_searchInput = nullptr;
     QPushButton *m_searchButton = nullptr;
     QPushButton *m_homeButton = nullptr;
@@ -90,8 +115,18 @@ private:
     QPushButton *m_authButton = nullptr;
 
     QStackedWidget *m_stackedWidget = nullptr;
+    QWidget *m_feedContainer = nullptr;
+    QWidget *m_playlistHeaderWidget = nullptr;
+    QPushButton *m_playlistBackButton = nullptr;
+    QLabel *m_playlistTitleLabel = nullptr;
     FeedView *m_feedView = nullptr;
     PlayerWidget *m_playerWidget = nullptr;
+    PlaylistPageWidget *m_playlistPageWidget = nullptr;
+    lightyt::ui::LeftNavDrawer *m_leftDrawer = nullptr;
+    lightyt::ui::NavSidebar *m_persistentSidebar = nullptr;
+
+    std::vector<PlaylistItem> m_currentPlaylists;
+    std::string m_playlistsContinuationToken;
 
     void setupUi();
     void setStatusText(const QString &msg);
@@ -99,6 +134,8 @@ private:
     void updateNavTabs(NavTab tab);
     void loadHomeFeedAsync();
     void loadHomeFeedAsync(bool switchToFeed);
+    void loadPlaylistsAsync();
     void loadFeedAsync(const std::string &browseId, const QString &modeName, bool switchToFeed = true);
     void executeSearchAsync(const QString &query);
+    void openPlaylistPage(const VideoItem &item);
 };

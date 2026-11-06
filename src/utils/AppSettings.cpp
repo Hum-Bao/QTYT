@@ -48,6 +48,10 @@ bool isKnownSettingKey(const QString &key) {
         key == "account/channelName" || key == "channelName") return true;
     // 12. Log level
     if (key == "logLevel" || key == "log_level" || key == "app/log_level") return true;
+    // 13. Sidebar minimal mode
+    if (key == "sidebarMinimal" || key == "sidebar_minimal" || 
+        key == "SidebarMinimal" || key == "ui/sidebar_minimal" || 
+        key == "ui/sidebarMinimal") return true;
 
     return false;
 }
@@ -103,6 +107,7 @@ void AppSettings::loadFromDisk() {
     m_allowAv1 = readValue("allowAv1", false).toBool();
     m_autoplay = readValue("autoplay", true).toBool();
     m_theaterMode = readValue("theaterMode", false).toBool();
+    m_sidebarMinimal = readValue("SidebarMinimal", readValue("sidebarMinimal", false)).toBool();
 
     m_selectedChannelPageId = readValue("selectedChannelPageId", QString()).toString();
     m_selectedAuthUserIndex = readValue("selectedAuthUserIndex", -1).toInt();
@@ -133,6 +138,7 @@ void AppSettings::saveToDiskLocked() {
     settings.setValue("allowAv1", m_allowAv1);
     settings.setValue("autoplay", m_autoplay);
     settings.setValue("theaterMode", m_theaterMode);
+    settings.setValue("SidebarMinimal", m_sidebarMinimal);
     settings.setValue("selectedChannelPageId", m_selectedChannelPageId);
     settings.setValue("selectedAuthUserIndex", m_selectedAuthUserIndex);
     settings.setValue("selectedChannelName", m_selectedChannelName);
@@ -147,6 +153,7 @@ void AppSettings::saveToDiskLocked() {
     m_cachedDiskKeys.insert("allowAv1");
     m_cachedDiskKeys.insert("autoplay");
     m_cachedDiskKeys.insert("theaterMode");
+    m_cachedDiskKeys.insert("SidebarMinimal");
     m_cachedDiskKeys.insert("selectedChannelPageId");
     m_cachedDiskKeys.insert("selectedAuthUserIndex");
     m_cachedDiskKeys.insert("selectedChannelName");
@@ -275,6 +282,20 @@ void AppSettings::setTheaterMode(bool theater) {
     std::lock_guard lock(m_mutex);
     if (m_theaterMode != theater) {
         m_theaterMode = theater;
+        m_dirty = true;
+        saveToDiskLocked();
+    }
+}
+
+bool AppSettings::getSidebarMinimal() const {
+    std::lock_guard lock(m_mutex);
+    return m_sidebarMinimal;
+}
+
+void AppSettings::setSidebarMinimal(bool minimal) {
+    std::lock_guard lock(m_mutex);
+    if (m_sidebarMinimal != minimal) {
+        m_sidebarMinimal = minimal;
         m_dirty = true;
         saveToDiskLocked();
     }

@@ -21,7 +21,9 @@ enum FeedItemRole {
     IsShortRole,
     VideoItemRole,
     ChannelAvatarUrlRole,
-    ChannelAvatarPixmapRole
+    ChannelAvatarPixmapRole,
+    IsPlaylistRole,
+    PlaylistBrowseIdRole
 };
 
 class FeedModel : public QAbstractListModel {

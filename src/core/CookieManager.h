@@ -23,7 +23,7 @@ struct CookieEntry {
 class CookieManager {
 public:
     CookieManager() = default;
-    ~CookieManager() = default;
+    ~CookieManager();
 
     CookieManager(const CookieManager &other);
     CookieManager &operator=(const CookieManager &other);
@@ -35,6 +35,10 @@ public:
 
     // Load from pasted cookie string (Netscape text or raw Name=Value; strings)
     [[nodiscard]] bool loadFromString(std::string_view cookieContent);
+
+    // Merge cookies from Netscape cookies.txt file or string without clearing existing cookies
+    [[nodiscard]] bool mergeFromFile(const std::filesystem::path &filePath);
+    [[nodiscard]] bool mergeFromString(std::string_view cookieContent);
 
     // Save current cookies to Netscape cookies.txt format atomically
     [[nodiscard]] bool saveToFile(const std::filesystem::path &filePath) const;
@@ -72,6 +76,9 @@ public:
 
     // Debounced automatic save to m_cookieFilePath (if configured and dirty)
     void autoSaveIfChanged() const;
+
+    // Immediately flush dirty cookies to m_cookieFilePath regardless of debounce interval
+    void flushIfDirty() const;
 
     // Clears all loaded cookies
     void clear() noexcept;

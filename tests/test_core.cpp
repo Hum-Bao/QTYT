@@ -2816,6 +2816,122 @@ void testCookieManagerNetscapeStrictCompliance() {
     std::cout << "[PASS] testCookieManagerNetscapeStrictCompliance\n";
 }
 
+void testCookieManagerFlushAndBurstPersistence() {
+    const std::filesystem::path tmpPath =
+        std::filesystem::temp_directory_path() / "lightyt_test_cache" / "burst_cookies.txt";
+    std::error_code ec;
+    std::filesystem::remove(tmpPath, ec);
+
+    {
+        CookieManager mgr;
+        mgr.setCookieFilePath(tmpPath.string());
+        mgr.setCookie("SAPISID", "BurstSapisid123", ".youtube.com");
+        mgr.setCookie("SID", "BurstSid456", ".youtube.com");
+        mgr.flushIfDirty();
+        CHECK(std::filesystem::exists(tmpPath));
+
+        for (int i = 0; i < 6; ++i) {
+            HttpResponse resp{
+                .statusCode = 200,
+                .body = "{}",
+                .error = "",
+                .setCookies = {
+                    std::format("SIDCC=rotated_sidcc_{}; Domain=.youtube.com; Path=/; Max-Age=3600; Secure; HttpOnly", i),
+                    std::format("__Secure-1PSIDTS=rotated_ts_{}; Domain=.youtube.com; Path=/; Max-Age=7200; Secure; HttpOnly", i)
+                }
+            };
+            mgr.updateFromResponse(resp);
+        }
+
+        mgr.flushIfDirty();
+    }
+
+    CookieManager reloaded;
+    CHECK(reloaded.loadFromFile(tmpPath));
+    CHECK_EQ(reloaded.getCookie("SAPISID"), "BurstSapisid123");
+    CHECK_EQ(reloaded.getCookie("SIDCC"), "rotated_sidcc_5");
+    CHECK_EQ(reloaded.getCookie("__Secure-1PSIDTS"), "rotated_ts_5");
+
+    std::filesystem::remove(tmpPath, ec);
+    std::cout << "[PASS] testCookieManagerFlushAndBurstPersistence\n";
+}
+
+void testCookieManagerDeletionAndCompanionSync() {
+    CookieManager mgr;
+    mgr.setCookie("SAPISID", "SyncSapisid123", ".youtube.com");
+    mgr.setCookie("SAPISID", "SyncSapisid123", ".google.com");
+    mgr.setCookie("SID", "SyncSid456", ".youtube.com");
+    mgr.setCookie("SID", "SyncSid456", ".google.com");
+    mgr.setCookie("__Secure-1PSIDTS", "old_ts_token", ".google.com");
+    mgr.setCookie("TO_DELETE_MAXAGE", "val1", ".youtube.com");
+    mgr.setCookie("TO_DELETE_EXPIRES", "val2", ".youtube.com");
+    mgr.setCookie("TO_DELETE_EMPTY", "val3", ".youtube.com");
+
+    mgr.updateFromSetCookie("__Secure-1PSIDTS=new_rotated_ts_token; Domain=.youtube.com; Path=/; Max-Age=7200; Secure; HttpOnly");
+    CHECK_EQ(mgr.getCookie("__Secure-1PSIDTS"), "new_rotated_ts_token");
+    std::string googleHeader = mgr.getCookieHeaderValue("google.com");
+    CHECK(googleHeader.find("__Secure-1PSIDTS=new_rotated_ts_token") != std::string::npos);
+
+    mgr.updateFromSetCookie("TO_DELETE_MAXAGE=; Domain=.youtube.com; Path=/; Max-Age=0");
+    CHECK(mgr.getCookie("TO_DELETE_MAXAGE").empty());
+
+    mgr.updateFromSetCookie("TO_DELETE_EXPIRES=deleted; Domain=.youtube.com; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT");
+    CHECK(mgr.getCookie("TO_DELETE_EXPIRES").empty());
+
+    mgr.updateFromSetCookie("TO_DELETE_EMPTY=; Domain=.youtube.com; Path=/");
+    CHECK(mgr.getCookie("TO_DELETE_EMPTY").empty());
+
+    std::string ytHeader = mgr.getCookieHeaderValue("www.youtube.com");
+    CHECK(ytHeader.find("TO_DELETE") == std::string::npos);
+
+    std::cout << "[PASS] testCookieManagerDeletionAndCompanionSync\n";
+}
+
+void testCookieManagerMergeFromYtDlp() {
+    const std::filesystem::path tmpPath =
+        std::filesystem::temp_directory_path() / "lightyt_test_cache" / "ytdlp_dump_cookies.txt";
+    std::error_code ec;
+    std::filesystem::remove(tmpPath, ec);
+
+    CookieManager mgr;
+    mgr.setCookie("SAPISID", "OriginalSapisid", ".youtube.com");
+    mgr.setCookie("SID", "OriginalSid", ".youtube.com");
+    mgr.setCookie("__Secure-1PSIDTS", "old_pre_ytdlp_ts", ".youtube.com");
+
+    {
+        std::ofstream f(tmpPath);
+        f << "# Netscape HTTP Cookie File\n";
+        f << ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSAPISID\tOriginalSapisid\n";
+        f << ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tOriginalSid\n";
+        f << ".youtube.com\tTRUE\t/\tTRUE\t2147483647\t__Secure-1PSIDTS\trefreshed_from_ytdlp\n";
+        f << ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tYTDLP_NEW_COOKIE\tnew_value_123\n";
+    }
+
+    CHECK(mgr.mergeFromFile(tmpPath));
+    CHECK_EQ(mgr.getCookie("SAPISID"), "OriginalSapisid");
+    CHECK_EQ(mgr.getCookie("__Secure-1PSIDTS"), "refreshed_from_ytdlp");
+    CHECK_EQ(mgr.getCookie("YTDLP_NEW_COOKIE"), "new_value_123");
+
+    std::filesystem::remove(tmpPath, ec);
+    std::cout << "[PASS] testCookieManagerMergeFromYtDlp\n";
+}
+
+void testRotateCookiesPageTokenExtraction() {
+    std::string html1 = R"(<html><head><script>init('AQABx_secretToken123', true);</script></head></html>)";
+    CHECK_EQ(YouTubeClient::extractRotateCookiesToken(html1), "AQABx_secretToken123");
+
+    std::string html2 = R"(<html><script>  init(  "AQABy_secretToken456"  , 1);</script></html>)";
+    CHECK_EQ(YouTubeClient::extractRotateCookiesToken(html2), "AQABy_secretToken456");
+
+    std::string html3 = R"({"token":"AQABz_jsonToken789","status":"OK"})";
+    CHECK_EQ(YouTubeClient::extractRotateCookiesToken(html3), "AQABz_jsonToken789");
+
+    std::string html4 = "<html><body>No token here</body></html>";
+    CHECK(YouTubeClient::extractRotateCookiesToken(html4).empty());
+
+    std::cout << "[PASS] testRotateCookiesPageTokenExtraction\n";
+}
+
 void testStringUtilsAndDeepJsonGuard() {
     CHECK_EQ(lightyt::utils::stripShortsPrefix("shorts-shelf-item-dQw4w9WgXcQ"), "dQw4w9WgXcQ");
     CHECK_EQ(lightyt::utils::stripShortsPrefix("shorts-item-dQw4w9WgXcQ"), "dQw4w9WgXcQ");
@@ -3193,6 +3309,441 @@ void testStreamResolverShutdownPrefetchConcurrency() {
     std::cout << "[PASS] testStreamResolverShutdownPrefetchConcurrency\n";
 }
 
+void testPlaylistVideoRendererAndHistoryParsing() {
+    std::cout << "[RUN ] testPlaylistVideoRendererAndHistoryParsing...\n";
+
+    // 1. Classic playlistVideoRenderer with videoInfo runs (e.g. VLWL / VLLL)
+    nlohmann::json plRunsJson = nlohmann::json::parse(R"({
+        "contents": {
+            "playlistVideoListRenderer": {
+                "contents": [
+                    {
+                        "playlistVideoRenderer": {
+                            "videoId": "pl_vid_001",
+                            "title": { "runs": [ { "text": "Playlist Track 1" } ] },
+                            "shortBylineText": { "runs": [ { "text": "Sound Channel" } ] },
+                            "lengthText": { "simpleText": "04:15" },
+                            "videoInfo": {
+                                "runs": [
+                                    { "text": "1.2M views" },
+                                    { "text": " • " },
+                                    { "text": "2 years ago" }
+                                ]
+                            },
+                            "thumbnail": {
+                                "thumbnails": [
+                                    { "url": "https://i.ytimg.com/vi/pl_vid_001/hqdefault.jpg", "width": 480, "height": 360 }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    })");
+
+    auto videos1 = YouTubeClient::extractVideosFromJson(plRunsJson);
+    CHECK_EQ(videos1.size(), 1);
+    if (!videos1.empty()) {
+        CHECK_EQ(videos1[0].id, "pl_vid_001");
+        CHECK_EQ(videos1[0].title, "Playlist Track 1");
+        CHECK_EQ(videos1[0].author, "Sound Channel");
+        CHECK_EQ(videos1[0].duration, "04:15");
+        CHECK_EQ(videos1[0].viewCount, "1.2M views");
+        CHECK_EQ(videos1[0].publishedTime, "2 years ago");
+        CHECK_EQ(videos1[0].thumbnailUrl, "https://i.ytimg.com/vi/pl_vid_001/hqdefault.jpg");
+    }
+
+    // 2. Classic playlistVideoRenderer with videoInfo simpleText
+    nlohmann::json plSimpleJson = nlohmann::json::parse(R"({
+        "contents": {
+            "playlistVideoListRenderer": {
+                "contents": [
+                    {
+                        "playlistVideoRenderer": {
+                            "videoId": "pl_vid_002",
+                            "title": { "simpleText": "Playlist Track 2" },
+                            "shortBylineText": { "simpleText": "Live Streamer" },
+                            "lengthText": { "simpleText": "1:20:00" },
+                            "videoInfo": {
+                                "simpleText": "850K views • Streamed 3 days ago"
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    })");
+
+    auto videos2 = YouTubeClient::extractVideosFromJson(plSimpleJson);
+    CHECK_EQ(videos2.size(), 1);
+    if (!videos2.empty()) {
+        CHECK_EQ(videos2[0].id, "pl_vid_002");
+        CHECK_EQ(videos2[0].title, "Playlist Track 2");
+        CHECK_EQ(videos2[0].author, "Live Streamer");
+        CHECK_EQ(videos2[0].duration, "1:20:00");
+        CHECK_EQ(videos2[0].viewCount, "850K views");
+        CHECK_EQ(videos2[0].publishedTime, "Streamed 3 days ago");
+    }
+
+    // 3. FEhistory multi-section response with date groups and continuation token
+    nlohmann::json historyJson = nlohmann::json::parse(R"({
+        "contents": {
+            "twoColumnBrowseResultsRenderer": {
+                "tabs": [
+                    {
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [
+                                        {
+                                            "itemSectionRenderer": {
+                                                "header": {
+                                                    "itemSectionHeaderRenderer": {
+                                                        "title": { "simpleText": "Today" }
+                                                    }
+                                                },
+                                                "contents": [
+                                                    {
+                                                        "videoRenderer": {
+                                                            "videoId": "hist_today_01",
+                                                            "title": { "simpleText": "History Today Video" },
+                                                            "ownerText": { "runs": [{ "text": "Tech Today" }] },
+                                                            "viewCountText": { "simpleText": "100K views" },
+                                                            "publishedTimeText": { "simpleText": "5 hours ago" }
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            "itemSectionRenderer": {
+                                                "header": {
+                                                    "itemSectionHeaderRenderer": {
+                                                        "title": { "simpleText": "Yesterday" }
+                                                    }
+                                                },
+                                                "contents": [
+                                                    {
+                                                        "lockupViewModel": {
+                                                            "contentId": "hist_yest_02",
+                                                            "metadata": {
+                                                                "lockupMetadataViewModel": {
+                                                                    "title": { "content": "History Yesterday Video" }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                        {
+                                            "continuationItemRenderer": {
+                                                "continuationEndpoint": {
+                                                    "continuationCommand": {
+                                                        "token": "HISTORY_CONTINUATION_TOKEN_XYZ"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    })");
+
+    auto histVideos = YouTubeClient::extractVideosFromJson(historyJson);
+    CHECK_EQ(histVideos.size(), 2);
+    if (histVideos.size() == 2) {
+        CHECK_EQ(histVideos[0].id, "hist_today_01");
+        CHECK_EQ(histVideos[0].title, "History Today Video");
+        CHECK_EQ(histVideos[0].author, "Tech Today");
+        CHECK_EQ(histVideos[0].viewCount, "100K views");
+        CHECK_EQ(histVideos[0].publishedTime, "5 hours ago");
+
+        CHECK_EQ(histVideos[1].id, "hist_yest_02");
+        CHECK_EQ(histVideos[1].title, "History Yesterday Video");
+    }
+
+    std::string histContToken = YouTubeClient::extractContinuationToken(historyJson);
+    CHECK_EQ(histContToken, "HISTORY_CONTINUATION_TOKEN_XYZ");
+
+    std::cout << "[PASS] testPlaylistVideoRendererAndHistoryParsing\n";
+}
+
+void testExtractPlaylistsModernAndClassic() {
+    std::cout << "[RUN ] testExtractPlaylistsModernAndClassic...\n";
+
+    // 1. Modern LOCKUP_CONTENT_TYPE_PLAYLIST lockupViewModel
+    nlohmann::json modernPlaylistTree = nlohmann::json::parse(R"({
+        "contents": {
+            "sectionListRenderer": {
+                "contents": [
+                    {
+                        "itemSectionRenderer": {
+                            "contents": [
+                                {
+                                    "lockupViewModel": {
+                                        "contentType": "LOCKUP_CONTENT_TYPE_PLAYLIST",
+                                        "contentId": "PL_modern_123",
+                                        "rendererContext": {
+                                            "commandContext": {
+                                                "onTap": {
+                                                    "innertubeCommand": {
+                                                        "browseEndpoint": {
+                                                            "browseId": "VLPL_modern_123"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "metadata": {
+                                            "lockupMetadataViewModel": {
+                                                "title": { "content": "Modern Synthwave Mix" },
+                                                "metadata": {
+                                                    "contentMetadataViewModel": {
+                                                        "metadataRows": [
+                                                            {
+                                                                "parts": [
+                                                                    { "text": { "content": "Synth Channel" } },
+                                                                    { "text": { "content": "Updated 2 days ago" } }
+                                                                ]
+                                                            }
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "contentImage": {
+                                            "collectionThumbnailViewModel": {
+                                                "primaryThumbnail": {
+                                                    "thumbnailViewModel": {
+                                                        "image": {
+                                                            "sources": [
+                                                                { "url": "https://i.ytimg.com/vi/thumb_modern/hqdefault.jpg" }
+                                                            ]
+                                                        },
+                                                        "overlays": [
+                                                            {
+                                                                "thumbnailBadgeViewModel": {
+                                                                    "text": { "simpleText": "35 videos" }
+                                                                }
+                                                            }
+                                                        ]
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+    })");
+
+    // Invariant: extractVideos MUST ignore LOCKUP_CONTENT_TYPE_PLAYLIST
+    auto videos = YouTubeClient::extractVideosFromJson(modernPlaylistTree);
+    CHECK_EQ(videos.size(), 0);
+
+    // extractPlaylists MUST parse it
+    auto playlists1 = lightyt::InnerTubeParser::extractPlaylists(modernPlaylistTree);
+    CHECK_EQ(playlists1.size(), 1);
+    if (!playlists1.empty()) {
+        const auto &pl = playlists1[0];
+        CHECK_EQ(pl.id, "PL_modern_123");
+        CHECK_EQ(pl.browseId, "VLPL_modern_123");
+        CHECK_EQ(pl.title, "Modern Synthwave Mix");
+        CHECK_EQ(pl.author, "Synth Channel");
+        CHECK_EQ(pl.updatedTime, "Updated 2 days ago");
+        CHECK_EQ(pl.videoCountText, "35 videos");
+        CHECK_EQ(pl.thumbnailUrl, "https://i.ytimg.com/vi/thumb_modern/hqdefault.jpg");
+        CHECK_EQ(pl.getPlaylistUrl(), "https://www.youtube.com/playlist?list=PL_modern_123");
+
+        // Verify conversion to VideoItem representation
+        VideoItem vi = pl.toVideoItem();
+        CHECK_EQ(vi.id, "PL_modern_123");
+        CHECK_EQ(vi.title, "Modern Synthwave Mix");
+        CHECK_EQ(vi.author, "Synth Channel");
+        CHECK_EQ(vi.duration, "35 videos");
+        CHECK_EQ(vi.publishedTime, "Updated 2 days ago");
+        CHECK(vi.isPlaylist);
+        CHECK_EQ(vi.playlistBrowseId, "VLPL_modern_123");
+    }
+
+    // 2. Classic gridPlaylistRenderer & playlistRenderer
+    nlohmann::json classicTree = nlohmann::json::parse(R"({
+        "contents": {
+            "twoColumnBrowseResultsRenderer": {
+                "tabs": [
+                    {
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [
+                                        {
+                                            "itemSectionRenderer": {
+                                                "contents": [
+                                                    {
+                                                        "gridPlaylistRenderer": {
+                                                            "playlistId": "PL_classic_456",
+                                                            "title": { "simpleText": "Classic Rock Anthems" },
+                                                            "shortBylineText": { "runs": [ { "text": "Rock Records" } ] },
+                                                            "videoCountShortText": { "simpleText": "100 videos" },
+                                                            "publishedTimeText": { "simpleText": "Public" },
+                                                            "thumbnail": {
+                                                                "thumbnails": [
+                                                                    { "url": "https://i.ytimg.com/vi/thumb_classic/hqdefault.jpg" }
+                                                                ]
+                                                            }
+                                                        }
+                                                    },
+                                                    {
+                                                        "playlistRenderer": {
+                                                            "playlistId": "PL_classic_789",
+                                                            "title": { "simpleText": "Acoustic Sessions" },
+                                                            "shortBylineText": { "simpleText": "Acoustic Studio" },
+                                                            "videoCountText": { "simpleText": "12 videos" },
+                                                            "navigationEndpoint": {
+                                                                "browseEndpoint": {
+                                                                    "browseId": "VLPL_classic_789"
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    {
+                                                        "playlistRenderer": {
+                                                            "playlistId": "PL_classic_456",
+                                                            "title": { "simpleText": "Duplicate Should Be Ignored" }
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    })");
+
+    auto playlists2 = lightyt::InnerTubeParser::extractPlaylists(classicTree);
+    CHECK_EQ(playlists2.size(), 2);  // Duplicate PL_classic_456 was ignored
+    if (playlists2.size() == 2) {
+        CHECK_EQ(playlists2[0].id, "PL_classic_456");
+        CHECK_EQ(playlists2[0].browseId, "VLPL_classic_456");
+        CHECK_EQ(playlists2[0].title, "Classic Rock Anthems");
+        CHECK_EQ(playlists2[0].author, "Rock Records");
+        CHECK_EQ(playlists2[0].videoCountText, "100 videos");
+        CHECK_EQ(playlists2[0].updatedTime, "Public");
+        CHECK_EQ(playlists2[0].thumbnailUrl, "https://i.ytimg.com/vi/thumb_classic/hqdefault.jpg");
+
+        CHECK_EQ(playlists2[1].id, "PL_classic_789");
+        CHECK_EQ(playlists2[1].browseId, "VLPL_classic_789");
+        CHECK_EQ(playlists2[1].title, "Acoustic Sessions");
+        CHECK_EQ(playlists2[1].author, "Acoustic Studio");
+        CHECK_EQ(playlists2[1].videoCountText, "12 videos");
+    }
+
+    std::cout << "[PASS] testExtractPlaylistsModernAndClassic\n";
+}
+
+void testParsePlaylistHeader() {
+    std::cout << "[RUN ] testParsePlaylistHeader...\n";
+
+    // 1. Classic playlistHeaderRenderer
+    nlohmann::json classicTree = nlohmann::json::parse(R"({
+        "header": {
+            "playlistHeaderRenderer": {
+                "playlistId": "PL_classic_01",
+                "title": { "runs": [ { "text": "Classic Favorites" } ] },
+                "ownerText": { "runs": [ { "text": "Rock Archivist" } ] },
+                "numVideosText": { "runs": [ { "text": "42 videos" } ] },
+                "viewCountText": { "simpleText": "150,000 views" },
+                "descriptionText": { "runs": [ { "text": "The greatest rock classics." } ] },
+                "playlistThumbnail": {
+                    "thumbnails": [
+                        { "url": "https://i.ytimg.com/vi/thumb01/hqdefault.jpg", "width": 480, "height": 360 }
+                    ]
+                }
+            }
+        }
+    })");
+
+    PlaylistItem classicDetails;
+    bool classicOk = lightyt::InnerTubeParser::parsePlaylistHeader(classicTree, classicDetails);
+    CHECK(classicOk);
+    CHECK_EQ(classicDetails.id, "PL_classic_01");
+    CHECK_EQ(classicDetails.title, "Classic Favorites");
+    CHECK_EQ(classicDetails.author, "Rock Archivist");
+    CHECK_EQ(classicDetails.videoCountText, "42 videos");
+    CHECK_EQ(classicDetails.viewCountText, "150,000 views");
+    CHECK_EQ(classicDetails.description, "The greatest rock classics.");
+    CHECK_EQ(classicDetails.thumbnailUrl, "https://i.ytimg.com/vi/thumb01/hqdefault.jpg");
+
+    // 2. Modern pageHeaderViewModel (matching playlistpage.html)
+    nlohmann::json modernTree = nlohmann::json::parse(R"({
+        "header": {
+            "pageHeaderRenderer": {
+                "pageHeaderViewModel": {
+                    "dynamicTextViewModel": {
+                        "text": { "content": "Shelter Remixes" }
+                    },
+                    "contentPreviewImageViewModel": {
+                        "image": {
+                            "sources": [
+                                { "url": "https://i.ytimg.com/vi/3g5LWXk4WtE/hqdefault.jpg", "width": 480, "height": 360 }
+                            ]
+                        }
+                    },
+                    "contentMetadataViewModel": {
+                        "metadataRows": [
+                            {
+                                "avatarStackViewModel": {
+                                    "avatarStackText": { "content": "by Hum Bao" }
+                                }
+                            },
+                            {
+                                "metadataParts": [
+                                    { "text": { "content": "Playlist" } },
+                                    { "text": { "content": "Private" } },
+                                    { "text": { "content": "10 videos" } },
+                                    { "text": { "content": "296 views" } }
+                                ]
+                            }
+                        ]
+                    },
+                    "descriptionPreviewViewModel": {
+                        "description": { "content": "A curated collection of Shelter remixes." }
+                    }
+                }
+            }
+        }
+    })");
+
+    PlaylistItem modernDetails;
+    bool modernOk = YouTubeClient::parsePlaylistHeaderFromJson(modernTree, modernDetails);
+    CHECK(modernOk);
+    CHECK_EQ(modernDetails.title, "Shelter Remixes");
+    CHECK_EQ(modernDetails.author, "by Hum Bao");
+    CHECK_EQ(modernDetails.videoCountText, "10 videos");
+    CHECK_EQ(modernDetails.viewCountText, "296 views");
+    CHECK_EQ(modernDetails.updatedTime, "Private");
+    CHECK_EQ(modernDetails.description, "A curated collection of Shelter remixes.");
+    CHECK_EQ(modernDetails.thumbnailUrl, "https://i.ytimg.com/vi/3g5LWXk4WtE/hqdefault.jpg");
+
+    std::cout << "[PASS] testParsePlaylistHeader\n";
+}
+
 int main() noexcept {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
@@ -3224,6 +3775,10 @@ int main() noexcept {
         testCookieManagerResilientExpiry();
         testCookieManagerCrossDomainGoogleAuth();
         testCookieManagerNetscapeStrictCompliance();
+        testCookieManagerFlushAndBurstPersistence();
+        testCookieManagerDeletionAndCompanionSync();
+        testCookieManagerMergeFromYtDlp();
+        testRotateCookiesPageTokenExtraction();
         testHttpClientBasics();
         testCurlApiDynamicLoading();
         testJsonClassicVideoRenderer();
@@ -3264,6 +3819,9 @@ int main() noexcept {
         testLogger();
         testWindowsUtf8PathsAndBinaryValidation();
         testStreamResolverShutdownPrefetchConcurrency();
+        testPlaylistVideoRendererAndHistoryParsing();
+        testExtractPlaylistsModernAndClassic();
+        testParsePlaylistHeader();
     } catch (const std::exception &e) {
         std::cerr << "Fatal test exception: " << e.what() << "\n";
         return 1;

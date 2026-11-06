@@ -32,6 +32,21 @@ constexpr const char *kCompactFeedStyleSheet =
     "  padding: 0px;"
     "}";
 
+constexpr const char *kPlaylistFeedStyleSheet =
+    "QListView {"
+    "  background-color: transparent;"
+    "  border: none;"
+    "  padding: 4px;"
+    "}"
+    "QScrollBar:vertical {"
+    "  background: #0f0f0f; width: 10px; margin: 0px;"
+    "}"
+    "QScrollBar::handle:vertical {"
+    "  background: #333333; min-height: 20px; border-radius: 5px;"
+    "}"
+    "QScrollBar::handle:vertical:hover { background: #555555; }"
+    "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }";
+
 }  // namespace
 
 FeedView::FeedView(QWidget *parent)
@@ -88,6 +103,12 @@ void FeedView::setLayoutMode(CardLayoutMode mode) {
         setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         setStyleSheet(kCompactFeedStyleSheet);
+    } else if (m_layoutMode == CardLayoutMode::Playlist) {
+        m_forwardWheelEvents = false;
+        setMinimumHeight(0);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setStyleSheet(kPlaylistFeedStyleSheet);
     } else {
         m_forwardWheelEvents = false;
         setMinimumHeight(0);
@@ -157,6 +178,21 @@ void FeedView::updateGridLayout() {
         return;
     }
 
+    if (m_layoutMode == CardLayoutMode::Playlist) {
+        int availableWidth = std::max(360, viewport()->width());
+        constexpr int playlistRowHeight = 128;
+        QSize cellSize(availableWidth, playlistRowHeight);
+        if (m_delegate && m_delegate->cardSize() != cellSize) {
+            m_delegate->setCardSize(cellSize);
+        }
+        if (gridSize() != cellSize) {
+            setGridSize(cellSize);
+        }
+        setMinimumHeight(0);
+        updateGeometry();
+        return;
+    }
+
     int availableWidth = std::max(300, viewport()->width() - 4);
 
     constexpr int minCardWidth = 300;
@@ -165,7 +201,7 @@ void FeedView::updateGridLayout() {
 
     int thumbW = std::max(160, colWidth - 16);
     int thumbH = (thumbW * 9) / 16;
-    int cardHeight = thumbH + 100;
+    int cardHeight = thumbH + 120;
 
     QSize cellSize(colWidth, cardHeight);
     if (m_delegate && m_delegate->cardSize() != cellSize) {
@@ -189,6 +225,11 @@ void FeedView::resizeEvent(QResizeEvent *event) {
 void FeedView::mouseMoveEvent(QMouseEvent *event) {
     QListView::mouseMoveEvent(event);
     QModelIndex index = indexAt(event->pos());
+    if (index.isValid()) {
+        setCursor(Qt::PointingHandCursor);
+    } else {
+        unsetCursor();
+    }
     if (index != m_hoveredIndex) {
         m_hoveredIndex = index;
         if (m_hoverTimer) {
@@ -199,6 +240,7 @@ void FeedView::mouseMoveEvent(QMouseEvent *event) {
 
 void FeedView::leaveEvent(QEvent *event) {
     QListView::leaveEvent(event);
+    unsetCursor();
     if (m_hoverTimer) {
         m_hoverTimer->stop();
     }
@@ -234,7 +276,11 @@ void FeedView::onItemClicked(const QModelIndex &index) {
         return;
     const auto *item = m_model->getVideoItem(index.row());
     if (item != nullptr) {
-        emit videoSelected(*item);
+        if (item->isPlaylist) {
+            emit viewFullPlaylistRequested(*item);
+        } else {
+            emit videoSelected(*item);
+        }
     }
 }
 

@@ -1,5 +1,7 @@
 #include "StreamResolver.h"
 
+#include "CookieManager.h"
+
 #include "Process.h"
 #include "utils/AppPaths.h"
 #include "utils/Logger.h"
@@ -237,6 +239,14 @@ std::string StreamResolver::qualityToFormatSort(std::string_view quality, bool a
         return allowAv1 ? "res:360,vcodec:av01,vp09,avc1" : "res:360";
     }
     return "";
+}
+
+static std::mutex g_cookieMgrMutex;
+static std::weak_ptr<CookieManager> g_cookieManager;
+
+void StreamResolver::setCookieManager(std::weak_ptr<CookieManager> cookieManager) {
+    std::lock_guard lock(g_cookieMgrMutex);
+    g_cookieManager = std::move(cookieManager);
 }
 
 void StreamResolver::clearCache() {
@@ -883,6 +893,15 @@ bool StreamResolver::resolve(std::string_view videoIdOrUrl, std::string_view qua
     std::string format = qualityToFormatString(quality, allowAv1);
     std::string formatSort = qualityToFormatSort(quality, allowAv1);
 
+    std::shared_ptr<CookieManager> activeCookieMgr;
+    {
+        std::lock_guard lock(g_cookieMgrMutex);
+        activeCookieMgr = g_cookieManager.lock();
+    }
+    if (activeCookieMgr) {
+        activeCookieMgr->flushIfDirty();
+    }
+
     // Isolate cookies into a temporary file so yt-dlp's cookie jar dumper never mutates the master file
     std::filesystem::path tempCookiePath;
     std::string effectiveCookiePath;
@@ -914,13 +933,18 @@ bool StreamResolver::resolve(std::string_view videoIdOrUrl, std::string_view qua
 
     struct TempCookieGuard {
         std::filesystem::path path;
+        std::shared_ptr<CookieManager> mgr;
         ~TempCookieGuard() {
             if (!path.empty()) {
+                if (mgr) {
+                    static_cast<void>(mgr->mergeFromFile(path));
+                    mgr->flushIfDirty();
+                }
                 std::error_code ec;
                 std::filesystem::remove(path, ec);
             }
         }
-    } cookieGuard{.path = tempCookiePath};
+    } cookieGuard{.path = tempCookiePath, .mgr = activeCookieMgr};
 
     auto tryYtDlp = [&](bool useCookies, std::string_view extractorArgs,
                         int timeoutMs = 12000) -> lightyt::ProcessResult {

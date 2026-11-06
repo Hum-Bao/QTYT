@@ -46,6 +46,123 @@ YouTubeClient::YouTubeClient(const std::shared_ptr<CookieManager> &cookieManager
 
 YouTubeClient::~YouTubeClient() = default;
 
+std::string YouTubeClient::extractRotateCookiesToken(std::string_view html) {
+    auto pos = html.find("init(");
+    if (pos != std::string_view::npos) {
+        size_t argStart = pos + 5;
+        while (argStart < html.size() &&
+               (html[argStart] == ' ' || html[argStart] == '\t' || html[argStart] == '\r' || html[argStart] == '\n')) {
+            ++argStart;
+        }
+        if (argStart < html.size() && (html[argStart] == '\'' || html[argStart] == '"')) {
+            char quote = html[argStart];
+            size_t tokenStart = argStart + 1;
+            size_t tokenEnd = html.find(quote, tokenStart);
+            if (tokenEnd != std::string_view::npos && tokenEnd > tokenStart) {
+                return std::string(html.substr(tokenStart, tokenEnd - tokenStart));
+            }
+        }
+    }
+    for (std::string_view pattern : {"\"token\":\"", "\"token\": \"", "'token':'", "'token': '"}) {
+        pos = html.find(pattern);
+        if (pos != std::string_view::npos) {
+            size_t tokenStart = pos + pattern.size();
+            char quote = pattern.back();
+            size_t tokenEnd = html.find(quote, tokenStart);
+            if (tokenEnd != std::string_view::npos && tokenEnd > tokenStart) {
+                return std::string(html.substr(tokenStart, tokenEnd - tokenStart));
+            }
+        }
+    }
+    return {};
+}
+
+void YouTubeClient::rotateCookiesIfNeeded(const std::atomic<bool> *cancelToken) const {
+    if (!m_cookieManager || !m_cookieManager->hasAuth()) {
+        return;
+    }
+    auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard lock(m_rotationMutex);
+        if (m_lastCookieRotation.time_since_epoch().count() != 0 &&
+            (now - m_lastCookieRotation) < std::chrono::minutes(10)) {
+            return;
+        }
+    }
+    static_cast<void>(rotateCookies(cancelToken));
+}
+
+bool YouTubeClient::rotateCookies(const std::atomic<bool> *cancelToken) const {
+    if (cancelToken && cancelToken->load()) {
+        return false;
+    }
+    if (!m_cookieManager || !m_cookieManager->hasAuth()) {
+        return false;
+    }
+
+    std::unique_lock lock(m_rotationMutex);
+    auto now = std::chrono::steady_clock::now();
+    if (m_lastCookieRotation.time_since_epoch().count() != 0 &&
+        (now - m_lastCookieRotation) < std::chrono::seconds(60)) {
+        return true;
+    }
+
+    LOG_DEBUG("[YouTubeClient] Initiating session cookie rotation via accounts.youtube.com/RotateCookiesPage...");
+
+    std::vector<std::string> getHeaders = {
+        "Cookie: " + m_cookieManager->getCookieHeaderValue("accounts.youtube.com"),
+        "Referer: https://www.youtube.com/",
+    };
+    HttpResponse pageRes = HttpClient::get(
+        "https://accounts.youtube.com/RotateCookiesPage?origin=https://www.youtube.com&yt_pid=1",
+        getHeaders, 10, cancelToken);
+
+    if (m_cookieManager) {
+        m_cookieManager->updateFromResponse(pageRes);
+    }
+
+    if (!pageRes.isOk() || pageRes.body.empty()) {
+        LOG_WARN("[YouTubeClient] Failed to fetch RotateCookiesPage (HTTP {})", pageRes.statusCode);
+        return false;
+    }
+
+    std::string token = extractRotateCookiesToken(pageRes.body);
+    if (token.empty()) {
+        LOG_WARN("[YouTubeClient] Failed to extract token from RotateCookiesPage");
+        return false;
+    }
+
+    std::string postUrl = "https://accounts.youtube.com/RotateCookies";
+    std::string postBody = std::format("[null,\"{}\",1]", token);
+    std::vector<std::string> postHeaders = {
+        "Cookie: " + m_cookieManager->getCookieHeaderValue("accounts.youtube.com"),
+        "Origin: https://accounts.youtube.com",
+        "Referer: https://accounts.youtube.com/RotateCookiesPage?origin=https://www.youtube.com&yt_pid=1",
+        "X-YouTube-Client-Name: 1",
+        "X-YouTube-Client-Version: " + getCurrentClientVersion(),
+    };
+    std::string sapisidHash = m_cookieManager->getSapisidHash("https://accounts.youtube.com");
+    if (!sapisidHash.empty()) {
+        postHeaders.push_back("Authorization: " + sapisidHash);
+    }
+
+    HttpResponse rotateRes = HttpClient::postJson(postUrl, postBody, postHeaders, 10, cancelToken);
+    if (m_cookieManager) {
+        m_cookieManager->updateFromResponse(rotateRes);
+        m_cookieManager->flushIfDirty();
+    }
+
+    if (rotateRes.isOk()) {
+        m_lastCookieRotation = std::chrono::steady_clock::now();
+        LOG_INFO("[YouTubeClient] Cookie rotation succeeded ({} Set-Cookie headers applied)",
+                 rotateRes.setCookies.size());
+        return true;
+    }
+
+    LOG_WARN("[YouTubeClient] RotateCookies POST returned HTTP {}", rotateRes.statusCode);
+    return false;
+}
+
 HttpResponse YouTubeClient::postInnerTube(const std::string &url, const std::string &body,
                                           const std::vector<std::string> &headers, int timeoutSec,
                                           const std::atomic<bool> *cancelToken) const {
@@ -301,12 +418,131 @@ std::vector<VideoItem> YouTubeClient::fetchSubscriptionsFeed(std::string &errorM
     return fetchFeed("FEsubscriptions", errorMessage);
 }
 
+FeedResult YouTubeClient::fetchHistoryFeed(std::string &errorMessage) {
+    return fetchFeedWithContinuation("FEhistory", errorMessage);
+}
+
+FeedResult YouTubeClient::fetchWatchLaterFeed(std::string &errorMessage) {
+    return fetchFeedWithContinuation("VLWL", errorMessage);
+}
+
+FeedResult YouTubeClient::fetchLikedVideosFeed(std::string &errorMessage) {
+    return fetchFeedWithContinuation("VLLL", errorMessage);
+}
+
+PlaylistsResult YouTubeClient::fetchPlaylistsWithContinuation(std::string &errorMessage) {
+    bool useAuth = m_cookieManager && m_cookieManager->hasAuth();
+    nlohmann::json req;
+    req["context"] = buildBaseContext();
+    req["browseId"] = "FEplaylist_aggregation";
+
+    std::vector<std::string> headers = buildHeaders(useAuth);
+    std::string browseUrl = lightyt::innertube::makeApiUrl("browse");
+    HttpResponse res = postInnerTube(browseUrl, req.dump(), headers);
+
+    if (!res.isOk()) {
+        errorMessage = res.error.empty() ? ("HTTP error " + std::to_string(res.statusCode)) : res.error;
+        LOG_WARN("[YouTubeClient] Failed to fetch playlists: {}", errorMessage);
+        return {};
+    }
+
+    try {
+        nlohmann::json parsed = nlohmann::json::parse(res.body);
+        PlaylistsResult result;
+        result.playlists = lightyt::InnerTubeParser::extractPlaylists(parsed);
+        result.continuationToken = lightyt::InnerTubeParser::extractContinuationToken(parsed);
+        LOG_INFO("[YouTubeClient] Extracted {} playlists (continuation: {})", result.playlists.size(),
+                 !result.continuationToken.empty());
+        return result;
+    } catch (const std::exception &e) {
+        errorMessage = std::string("JSON parse error: ") + e.what();
+        LOG_ERROR("[YouTubeClient] {}", errorMessage);
+        return {};
+    }
+}
+
+PlaylistsResult YouTubeClient::fetchPlaylistsContinuation(std::string_view token, std::string &errorMessage) {
+    if (token.empty()) {
+        errorMessage = "Empty continuation token";
+        return {};
+    }
+    bool useAuth = m_cookieManager && m_cookieManager->hasAuth();
+    nlohmann::json req;
+    req["context"] = buildBaseContext();
+    req["continuation"] = std::string(token);
+
+    std::vector<std::string> headers = buildHeaders(useAuth);
+    std::string endpointUrl = lightyt::innertube::makeApiUrl("browse");
+    HttpResponse res = postInnerTube(endpointUrl, req.dump(), headers);
+
+    if (!res.isOk()) {
+        errorMessage = res.error.empty() ? ("HTTP error " + std::to_string(res.statusCode)) : res.error;
+        LOG_WARN("[YouTubeClient] Failed to fetch playlists continuation: {}", errorMessage);
+        return {};
+    }
+
+    try {
+        nlohmann::json parsed = nlohmann::json::parse(res.body);
+        PlaylistsResult result;
+        result.playlists = lightyt::InnerTubeParser::extractPlaylists(parsed);
+        result.continuationToken = lightyt::InnerTubeParser::extractContinuationToken(parsed);
+        return result;
+    } catch (const std::exception &e) {
+        errorMessage = std::string("JSON parse error: ") + e.what();
+        LOG_ERROR("[YouTubeClient] {}", errorMessage);
+        return {};
+    }
+}
+
 std::vector<VideoItem> YouTubeClient::fetchFeed(std::string_view browseId, std::string &errorMessage) {
     return fetchFeedWithContinuation(browseId, errorMessage).videos;
 }
 
+PlaylistFeedResult YouTubeClient::fetchPlaylistFeedWithContinuation(std::string_view browseId, std::string &errorMessage) {
+    bool useAuth = m_cookieManager && m_cookieManager->hasAuth();
+    nlohmann::json req;
+    req["context"] = buildBaseContext();
+    req["browseId"] = std::string(browseId);
+
+    std::vector<std::string> headers = buildHeaders(useAuth);
+    std::string browseUrl = lightyt::innertube::makeApiUrl("browse");
+    HttpResponse res = postInnerTube(browseUrl, req.dump(), headers);
+
+    if (!res.isOk() && useAuth) {
+        if (!m_selectedChannelPageId.empty()) {
+            std::vector<std::string> rootHeaders = buildHeaders(true, "https://www.youtube.com/", true);
+            res = postInnerTube(browseUrl, req.dump(), rootHeaders);
+        }
+        if (!res.isOk()) {
+            std::vector<std::string> anonHeaders = buildHeaders(false);
+            req["context"] = buildBaseContext(false);
+            res = postInnerTube(browseUrl, req.dump(), anonHeaders);
+        }
+    }
+
+    if (!res.isOk()) {
+        errorMessage = res.error.empty() ? ("HTTP error " + std::to_string(res.statusCode)) : res.error;
+        return {};
+    }
+
+    try {
+        nlohmann::json root = nlohmann::json::parse(res.body);
+        PlaylistFeedResult result;
+        static_cast<void>(lightyt::InnerTubeParser::parsePlaylistHeader(root, result.playlist));
+        result.feed.videos = lightyt::InnerTubeParser::extractVideos(root);
+        result.feed.continuationToken = lightyt::InnerTubeParser::extractContinuationToken(root);
+        return result;
+    } catch (const std::exception &e) {
+        errorMessage = std::string("JSON parse error: ") + e.what();
+        return {};
+    }
+}
+
 FeedResult YouTubeClient::fetchFeedWithContinuation(std::string_view browseId, std::string &errorMessage) {
     bool useAuth = m_cookieManager && m_cookieManager->hasAuth();
+    if (useAuth) {
+        rotateCookiesIfNeeded();
+    }
     nlohmann::json req;
     req["context"] = buildBaseContext();
     req["browseId"] = std::string(browseId);
@@ -316,6 +552,18 @@ FeedResult YouTubeClient::fetchFeedWithContinuation(std::string_view browseId, s
     std::vector<std::string> headers = buildHeaders(useAuth);
     std::string browseUrl = lightyt::innertube::makeApiUrl("browse");
     HttpResponse res = postInnerTube(browseUrl, req.dump(), headers);
+
+    if (!res.isOk() && useAuth) {
+        if (res.statusCode == 401 || res.statusCode == 403) {
+            LOG_WARN("[YouTubeClient] Feed request received HTTP {}. Attempting cookie rotation...", res.statusCode);
+            if (rotateCookies()) {
+                LOG_INFO("[YouTubeClient] Cookie rotation succeeded after HTTP {}. Retrying feed...", res.statusCode);
+                headers = buildHeaders(true);
+                req["context"] = buildBaseContext();
+                res = postInnerTube(browseUrl, req.dump(), headers);
+            }
+        }
+    }
 
     if (!res.isOk() && useAuth) {
         LOG_INFO("[YouTubeClient] Authenticated feed request failed (HTTP {}). Checking fallback options...",
@@ -374,9 +622,25 @@ FeedResult YouTubeClient::fetchFeedWithContinuation(std::string_view browseId, s
                 const auto &rc = parsed["responseContext"];
                 if (rc.contains("mainAppWebResponseContext") && rc["mainAppWebResponseContext"].is_object() &&
                     rc["mainAppWebResponseContext"].value("loggedOut", false)) {
-                    errorMessage =
-                        "Session cookies expired or logged out on YouTube. Please re-import fresh cookies.txt.";
-                    LOG_WARN("[YouTubeClient] {}", errorMessage);
+                    LOG_WARN("[YouTubeClient] InnerTube reported loggedOut=true. Attempting immediate cookie rotation...");
+                    if (rotateCookies()) {
+                        LOG_INFO("[YouTubeClient] Cookie rotation succeeded after loggedOut signal. Retrying feed request...");
+                        headers = buildHeaders(true);
+                        req["context"] = buildBaseContext();
+                        res = postInnerTube(browseUrl, req.dump(), headers);
+                        if (res.isOk()) {
+                            try {
+                                parsed = nlohmann::json::parse(res.body);
+                                result.videos = extractVideosFromJson(parsed);
+                                result.continuationToken = extractContinuationToken(parsed);
+                            } catch (...) {}
+                        }
+                    }
+                    if (result.videos.empty() && rc["mainAppWebResponseContext"].value("loggedOut", false)) {
+                        errorMessage =
+                            "Session cookies expired or logged out on YouTube. Please re-import fresh cookies.txt.";
+                        LOG_WARN("[YouTubeClient] {}", errorMessage);
+                    }
                 }
             }
             if (false) {
@@ -453,7 +717,9 @@ FeedResult YouTubeClient::fetchContinuation(std::string_view continuationToken, 
             retryReq["context"]["user"].erase("onBehalfOfUser");
         }
         retryReq["continuation"] = std::string(continuationToken);
-        res = postInnerTube(endpointUrl, retryReq.dump(), headers);
+        std::vector<std::string> cleanHeaders =
+            buildHeaders(true, "https://www.youtube.com/", /*rootAccountOnly=*/true);
+        res = postInnerTube(endpointUrl, retryReq.dump(), cleanHeaders);
 
         if (!res.isOk()) {
             LOG_INFO("[YouTubeClient] Retrying continuation anonymously (HTTP {})...", res.statusCode);
@@ -526,6 +792,14 @@ FeedResult YouTubeClient::searchWithContinuation(std::string_view query, std::st
 
 std::vector<VideoItem> YouTubeClient::extractVideosFromJson(const nlohmann::json &root) {
     return lightyt::InnerTubeParser::extractVideos(root);
+}
+
+std::vector<PlaylistItem> YouTubeClient::extractPlaylistsFromJson(const nlohmann::json &root) {
+    return lightyt::InnerTubeParser::extractPlaylists(root);
+}
+
+bool YouTubeClient::parsePlaylistHeaderFromJson(const nlohmann::json &root, PlaylistItem &outDetails) {
+    return lightyt::InnerTubeParser::parsePlaylistHeader(root, outDetails);
 }
 
 bool YouTubeClient::parseVideoRenderer(const nlohmann::json &vr, VideoItem &outItem) {

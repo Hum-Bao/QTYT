@@ -45,7 +45,12 @@ enum class IconId : uint16_t {
     Heart,
     ChevronDown,
     ChevronUp,
-    SortLines
+    SortLines,
+    Menu,
+    History,
+    Playlists,
+    WatchLater,
+    Shuffle
 };
 
 struct IconKey {
@@ -721,6 +726,149 @@ template<typename DrawFn>
 }
 [[nodiscard]] inline QIcon sortLines(int size, const QColor &color) {
     return sortLines(color, size);
+}
+
+// Hamburger 3-line menu icon
+[[nodiscard]] inline QIcon menu(const QColor &color = QColor(0xf1, 0xf1, 0xf1), int size = 24) {
+    return detail::makeCachedIcon(detail::IconId::Menu, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      if (size != 24) {
+                                          const double s = static_cast<double>(size) / 24.0;
+                                          p.scale(s, s);
+                                      }
+                                      QPen pen(color, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      p.drawLine(QPointF(5.0, 6.0), QPointF(19.0, 6.0));
+                                      p.drawLine(QPointF(5.0, 12.0), QPointF(19.0, 12.0));
+                                      p.drawLine(QPointF(5.0, 18.0), QPointF(19.0, 18.0));
+                                  });
+}
+[[nodiscard]] inline QIcon menu(int size, const QColor &color) {
+    return menu(color, size);
+}
+
+// History icon (counter-clockwise circular arrow with clock hands)
+[[nodiscard]] inline QIcon history(const QColor &color = QColor(0xf1, 0xf1, 0xf1), int size = 24) {
+    return detail::makeCachedIcon(detail::IconId::History, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      if (size != 24) {
+                                          const double s = static_cast<double>(size) / 24.0;
+                                          p.scale(s, s);
+                                      }
+                                      QPen pen(color, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      p.setBrush(Qt::NoBrush);
+
+                                      // Circular arc (center 12, 12, radius 8.5)
+                                      QRectF arcRect(3.5, 3.5, 17.0, 17.0);
+                                      p.drawArc(arcRect, 130 * 16, -295 * 16);
+
+                                      // Arrow at top left
+                                      p.drawLine(QPointF(2.5, 4.0), QPointF(2.5, 9.0));
+                                      p.drawLine(QPointF(2.5, 9.0), QPointF(7.5, 9.0));
+
+                                      // Clock hands: vertical and angled
+                                      p.drawLine(QPointF(12.0, 7.0), QPointF(12.0, 12.0));
+                                      p.drawLine(QPointF(12.0, 12.0), QPointF(15.5, 14.0));
+                                  });
+}
+[[nodiscard]] inline QIcon history(int size, const QColor &color) {
+    return history(color, size);
+}
+
+// Playlists icon (stacked lines with play triangle)
+[[nodiscard]] inline QIcon playlists(const QColor &color = QColor(0xf1, 0xf1, 0xf1), int size = 24) {
+    return detail::makeCachedIcon(detail::IconId::Playlists, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      if (size != 24) {
+                                          const double s = static_cast<double>(size) / 24.0;
+                                          p.scale(s, s);
+                                      }
+                                      QPen pen(color, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+
+                                      // 3 horizontal bars
+                                      p.drawLine(QPointF(5.0, 6.0), QPointF(19.0, 6.0));
+                                      p.drawLine(QPointF(5.0, 11.5), QPointF(19.0, 11.5));
+                                      p.drawLine(QPointF(5.0, 17.0), QPointF(13.0, 17.0));
+
+                                      // Play triangle
+                                      QPainterPath tri;
+                                      tri.moveTo(16.0, 14.5);
+                                      tri.lineTo(21.5, 17.5);
+                                      tri.lineTo(16.0, 20.5);
+                                      tri.closeSubpath();
+                                      p.setPen(Qt::NoPen);
+                                      p.fillPath(tri, color);
+                                  });
+}
+[[nodiscard]] inline QIcon playlists(int size, const QColor &color) {
+    return playlists(color, size);
+}
+
+// Watch Later clock icon
+[[nodiscard]] inline QIcon watchLater(const QColor &color = QColor(0xf1, 0xf1, 0xf1), int size = 24) {
+    return detail::makeCachedIcon(detail::IconId::WatchLater, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      if (size != 24) {
+                                          const double s = static_cast<double>(size) / 24.0;
+                                          p.scale(s, s);
+                                      }
+                                      QPen pen(color, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      p.setBrush(Qt::NoBrush);
+
+                                      p.drawEllipse(QPointF(12.0, 12.0), 9.0, 9.0);
+                                      p.drawLine(QPointF(12.0, 7.0), QPointF(12.0, 12.0));
+                                      p.drawLine(QPointF(12.0, 12.0), QPointF(15.5, 14.0));
+                                  });
+}
+[[nodiscard]] inline QIcon watchLater(int size, const QColor &color) {
+    return watchLater(color, size);
+}
+
+// Shuffle crossing arrows icon
+[[nodiscard]] inline QIcon shuffle(const QColor &color = QColor(0xf1, 0xf1, 0xf1), int size = 24) {
+    return detail::makeCachedIcon(detail::IconId::Shuffle, size, size, color.rgba(), 0,
+                                  [color, size](QPainter &p, const QRectF &) {
+                                      if (size != 24) {
+                                          const double s = static_cast<double>(size) / 24.0;
+                                          p.scale(s, s);
+                                      }
+                                      QPen pen(color, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                                      p.setPen(pen);
+                                      p.setBrush(Qt::NoBrush);
+
+                                      // Arrow 1: bottom-left to top-right
+                                      QPainterPath p1;
+                                      p1.moveTo(4.0, 18.0);
+                                      p1.lineTo(8.5, 18.0);
+                                      p1.lineTo(15.5, 6.0);
+                                      p1.lineTo(20.0, 6.0);
+                                      p.drawPath(p1);
+                                      // Arrowhead 1
+                                      p.drawLine(QPointF(16.0, 3.0), QPointF(20.0, 6.0));
+                                      p.drawLine(QPointF(16.0, 9.0), QPointF(20.0, 6.0));
+
+                                      // Arrow 2: top-left to bottom-right
+                                      QPainterPath p2;
+                                      p2.moveTo(4.0, 6.0);
+                                      p2.lineTo(8.5, 6.0);
+                                      p2.lineTo(10.5, 9.5);
+                                      p.drawPath(p2);
+
+                                      QPainterPath p3;
+                                      p3.moveTo(13.5, 14.5);
+                                      p3.lineTo(15.5, 18.0);
+                                      p3.lineTo(20.0, 18.0);
+                                      p.drawPath(p3);
+                                      // Arrowhead 2
+                                      p.drawLine(QPointF(16.0, 15.0), QPointF(20.0, 18.0));
+                                      p.drawLine(QPointF(16.0, 21.0), QPointF(20.0, 18.0));
+                                  });
+}
+[[nodiscard]] inline QIcon shuffle(int size, const QColor &color) {
+    return shuffle(color, size);
 }
 
 }  // namespace lightyt::ui::icons

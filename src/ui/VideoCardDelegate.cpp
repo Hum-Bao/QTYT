@@ -89,9 +89,25 @@ TitleLayoutData getOrComputeTitleLayout(const QString &title, const QFont &font,
 
 VideoCardDelegate::VideoCardDelegate(QObject *parent) : QStyledItemDelegate(parent) {}
 
+QRect VideoCardDelegate::getPlaylistButtonRect(const QRect &itemRect) {
+    QRect hoverRect = itemRect.adjusted(4, 4, -4, -4);
+    QRect contentRect = hoverRect.adjusted(4, 4, -4, -4);
+    int avatarX = contentRect.left();
+    int avatarRight = avatarX + AvatarFeedSize;
+    int textLeft = avatarRight + 12;
+    int textWidth = std::max(40, contentRect.right() - textLeft);
+    int btnW = std::min(textWidth, 148);
+    int btnH = 26;
+    int btnTop = contentRect.bottom() - btnH - 2;
+    return QRect(textLeft, btnTop, btnW, btnH);
+}
+
 QSize VideoCardDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const {
     if (m_mode == CardLayoutMode::CompactHorizontal) {
         return QSize(m_cardSize.width() > 0 ? m_cardSize.width() : 402, 102);
+    }
+    if (m_mode == CardLayoutMode::Playlist) {
+        return QSize(m_cardSize.width() > 0 ? m_cardSize.width() : 600, 128);
     }
     return m_cardSize;
 }
@@ -231,6 +247,129 @@ void VideoCardDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         painter->setPen(s_metaColor);
         painter->drawText(metaRect, Qt::AlignVCenter | Qt::AlignLeft,
                           afm.elidedText(meta, Qt::ElideRight, metaRect.width()));
+
+        painter->restore();
+        return;
+    }
+
+    if (m_mode == CardLayoutMode::Playlist) {
+        // --- PLAYLIST ROW MODE (Dedicated Playlist Page Video Column - 200x113 thumbnail) ---
+        QRect hoverRect = option.rect.adjusted(2, 2, -2, -2);
+        QRect contentRect = hoverRect.adjusted(2, 2, -2, -2);
+
+        // 1. Row background on hover
+        if (isHovered) {
+            QPainterPath bgPath;
+            bgPath.addRoundedRect(hoverRect, 8, 8);
+            painter->fillPath(bgPath, s_cardBgHover);
+        }
+
+        // 2. Track Index number on the left (1, 2, 3...)
+        QRect indexRect(contentRect.left(), contentRect.top(), 36, contentRect.height());
+        QFont idxFont = painter->font();
+        idxFont.setPointSize(10);
+        idxFont.setBold(false);
+        painter->setFont(idxFont);
+        painter->setPen(s_authorColor);
+        painter->drawText(indexRect, Qt::AlignCenter, QString::number(index.row() + 1));
+
+        // 3. Thumbnail (200x113 on left with 8px rounded corners matching YouTube playlist video rows)
+        constexpr int kThumbW = 200;
+        constexpr int kThumbH = 113;
+        int thumbY = contentRect.top() + (contentRect.height() - kThumbH) / 2;
+        QRect thumbRect(indexRect.right() + 4, thumbY, kThumbW, kThumbH);
+
+        QPainterPath thumbClip;
+        thumbClip.addRoundedRect(thumbRect, 8, 8);
+        painter->save();
+        painter->setClipPath(thumbClip);
+
+        if (QVariant v = index.data(ThumbnailPixmapRole); v.isValid()) {
+            QPixmap pix = v.value<QPixmap>();
+            if (!pix.isNull()) {
+                painter->drawPixmap(thumbRect, pix);
+            } else {
+                painter->fillRect(thumbRect, s_thumbBg);
+            }
+        } else {
+            painter->fillRect(thumbRect, s_thumbBg);
+        }
+        painter->restore();
+
+        // 4. Duration badge
+        QString duration = index.data(DurationRole).toString();
+        if (!duration.isEmpty()) {
+            QFont badgeFont = painter->font();
+            badgeFont.setPointSize(8);
+            badgeFont.setBold(true);
+            painter->setFont(badgeFont);
+
+            QFontMetrics fm(badgeFont);
+            int bw = fm.horizontalAdvance(duration) + 8;
+            int bh = fm.height() + 2;
+            QRect badgeRect(thumbRect.right() - bw - 4, thumbRect.bottom() - bh - 4, bw, bh);
+
+            QPainterPath badgePath;
+            badgePath.addRoundedRect(badgeRect, RadiusBadge, RadiusBadge);
+            painter->fillPath(badgePath, s_durationBadge);
+
+            painter->setPen(Qt::white);
+            painter->drawText(badgeRect, Qt::AlignCenter, duration);
+        }
+
+        // 5. Metadata on Right
+        int textLeft = thumbRect.right() + 16;
+        int textWidth = std::max(40, contentRect.right() - textLeft - 8);
+
+        // 5a. Title: bold #f1f1f1 (10.5pt)
+        QFont titleFont = painter->font();
+        titleFont.setPointSizeF(10.5);
+        titleFont.setBold(true);
+        painter->setFont(titleFont);
+        painter->setPen(s_titleColor);
+
+        TitleLayoutData layoutData =
+            getOrComputeTitleLayout(textWidth > 0 ? index.data(TitleRole).toString() : "", titleFont, textWidth);
+        int textTop = thumbRect.top() + 2;
+        painter->drawText(QPointF(textLeft, textTop + layoutData.ascent), layoutData.line1);
+
+        int titleBottom = textTop + std::max(18, layoutData.line1Height);
+        if (!layoutData.line2.isEmpty()) {
+            painter->drawText(QPointF(textLeft, textTop + layoutData.line1Height + layoutData.ascent), layoutData.line2);
+            titleBottom = textTop + std::max(36, layoutData.line1Height * 2);
+        }
+
+        // 5b. Channel Name + Views & Date (matching YouTube desktop byline)
+        QString author = index.data(AuthorRole).toString();
+        QString views = index.data(ViewCountRole).toString();
+        QString date = index.data(PublishedTimeRole).toString();
+
+        QFont subFont = painter->font();
+        subFont.setPointSize(9);
+        subFont.setBold(false);
+        painter->setFont(subFont);
+        painter->setPen(s_authorColor);
+        QFontMetrics afm(subFont);
+
+        QString metaDetails;
+        if (!views.isEmpty())
+            metaDetails += views;
+        if (!date.isEmpty()) {
+            if (!metaDetails.isEmpty())
+                metaDetails += " • ";
+            metaDetails += date;
+        }
+
+        int authorTop = titleBottom + 4;
+        QRect authorRect(textLeft, authorTop, textWidth, 18);
+        painter->drawText(authorRect, Qt::AlignVCenter | Qt::AlignLeft,
+                          afm.elidedText(author, Qt::ElideRight, authorRect.width()));
+
+        if (!metaDetails.isEmpty()) {
+            QRect metaRect(textLeft, authorRect.bottom() + 1, textWidth, 18);
+            painter->drawText(metaRect, Qt::AlignVCenter | Qt::AlignLeft,
+                              afm.elidedText(metaDetails, Qt::ElideRight, metaRect.width()));
+        }
 
         painter->restore();
         return;
@@ -389,6 +528,24 @@ void VideoCardDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     painter->setPen(s_metaColor);
     painter->drawText(metaRect, Qt::AlignVCenter | Qt::AlignLeft,
                       afm.elidedText(meta, Qt::ElideRight, metaRect.width()));
+
+    // 8. "View full playlist" Button for Playlists
+    bool isPlaylist = index.data(IsPlaylistRole).toBool();
+    if (isPlaylist) {
+        QRect btnRect = getPlaylistButtonRect(option.rect);
+        QPainterPath btnPath;
+        btnPath.addRoundedRect(btnRect, 13, 13);
+        painter->fillPath(btnPath, isHovered ? ColorElevatedHover : ColorElevated);
+        painter->setPen(QPen(ColorBorder, 1));
+        painter->drawPath(btnPath);
+
+        QFont btnFont = painter->font();
+        btnFont.setPointSize(8);
+        btnFont.setBold(true);
+        painter->setFont(btnFont);
+        painter->setPen(isHovered ? Qt::white : ColorTextPrimary);
+        painter->drawText(btnRect, Qt::AlignCenter, "View full playlist");
+    }
 
     painter->restore();
 }

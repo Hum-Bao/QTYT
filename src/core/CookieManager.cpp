@@ -202,6 +202,10 @@ void CookieManager::rebuildIndexLocked() {
     }
 }
 
+CookieManager::~CookieManager() {
+    flushIfDirty();
+}
+
 CookieManager::CookieManager(const CookieManager &other) {
     std::shared_lock lock(other.m_mutex);
     m_cookies = other.m_cookies;
@@ -336,6 +340,60 @@ bool CookieManager::loadFromString(std::string_view cookieContent) {
     return true;
 }
 
+bool CookieManager::mergeFromString(std::string_view cookieContent) {
+    std::vector<CookieEntry> parsedList;
+    size_t start = 0;
+
+    while (start < cookieContent.size()) {
+        size_t nlPos = cookieContent.find('\n', start);
+        std::string_view line = (nlPos == std::string_view::npos) ? cookieContent.substr(start)
+                                                                  : cookieContent.substr(start, nlPos - start);
+
+        std::string_view trimmed = trim(line);
+        if (!trimmed.empty()) {
+            if (trimmed.find('\t') != std::string_view::npos) {
+                parseNetscapeLine(trimmed, parsedList);
+            } else if (trimmed.find('=') != std::string_view::npos && !trimmed.starts_with('#')) {
+                parseHeaderString(trimmed, parsedList);
+            }
+        }
+
+        if (nlPos == std::string_view::npos) {
+            break;
+        }
+        start = nlPos + 1;
+    }
+
+    if (parsedList.empty()) {
+        return false;
+    }
+
+    std::unique_lock lock(m_mutex);
+    for (auto &c : parsedList) {
+        std::string_view d = c.domain;
+        if (d.find("youtube.com") == std::string_view::npos && d.find("google.com") == std::string_view::npos) {
+            continue;
+        }
+        indexCookieLocked(c);
+        m_cookies[{c.domain, c.name}] = std::move(c);
+    }
+    m_dirty.store(true, std::memory_order_release);
+    return true;
+}
+
+bool CookieManager::mergeFromFile(const std::filesystem::path &filePath) {
+    std::ifstream file(filePath);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string content = buffer.str();
+
+    return mergeFromString(content);
+}
+
 void CookieManager::parseNetscapeLine(std::string_view line, std::vector<CookieEntry> &outCookies) {
     std::string_view cleanLine = line;
     bool isHttpOnly = false;
@@ -443,6 +501,10 @@ bool CookieManager::saveToFile(const std::filesystem::path &filePath) const {
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     for (const auto &[key, entry] : m_cookies) {
+        if (entry.value.empty()) {
+            continue;
+        }
+
         // Only save Google and YouTube cookies to prevent foreign domain corruption in yt-dlp / mpv
         std::string_view d = entry.domain;
         if (d.find("youtube.com") == std::string_view::npos && d.find("google.com") == std::string_view::npos) {
@@ -528,7 +590,8 @@ bool CookieManager::isMasterAuthActiveLocked(int64_t now) const noexcept {
         }
         return std::ranges::any_of(it->second, [&](const auto &domain) {
             auto cookieIt = m_cookies.find({domain, std::string(authKey)});
-            return cookieIt != m_cookies.end() && (cookieIt->second.expires == 0 || cookieIt->second.expires > now);
+            return cookieIt != m_cookies.end() && !cookieIt->second.value.empty() &&
+                   (cookieIt->second.expires == 0 || cookieIt->second.expires > now);
         });
     });
 }
@@ -544,6 +607,10 @@ std::string CookieManager::getCookieHeaderValue(std::string_view targetHost) con
     // prioritize .youtube.com to ensure exact alignment with getSapisidHash()
     std::map<std::string, const CookieEntry *> selected;
     for (const auto &[key, entry] : m_cookies) {
+        if (entry.value.empty()) {
+            continue;
+        }
+
         bool matches = domainMatches(entry.domain, targetHost);
         if (!matches &&
             (targetHost == "youtube.com" || targetHost.ends_with(".youtube.com") || targetHost == "www.youtube.com")) {
@@ -614,7 +681,8 @@ bool CookieManager::hasAuth() const noexcept {
         }
         return std::ranges::any_of(it->second, [&](const auto &domain) {
             auto cookieIt = m_cookies.find({domain, std::string(authKey)});
-            return cookieIt != m_cookies.end() && (cookieIt->second.expires == 0 || cookieIt->second.expires > now);
+            return cookieIt != m_cookies.end() && !cookieIt->second.value.empty() &&
+                   (cookieIt->second.expires == 0 || cookieIt->second.expires > now);
         });
     });
 }
@@ -642,6 +710,9 @@ std::string CookieManager::getCookie(std::string_view name) const {
     for (const auto &domain : it->second) {
         auto cookieIt = m_cookies.find({domain, std::string(name)});
         if (cookieIt != m_cookies.end()) {
+            if (cookieIt->second.value.empty()) {
+                continue;
+            }
             if (isExpired(cookieIt->second)) {
                 continue;
             }
@@ -706,6 +777,11 @@ void CookieManager::updateFromSetCookie(std::string_view setCookieHeader, std::s
     entry.secure = false;
     entry.httpOnly = false;
 
+    bool hasMaxAge = false;
+    int64_t maxAgeVal = 0;
+    bool hasExpires = false;
+    int64_t expiresVal = 0;
+
     size_t start = (firstSemi == std::string_view::npos) ? cleanHeader.size() : firstSemi + 1;
     while (start < cleanHeader.size()) {
         size_t nextSemi = cleanHeader.find(';', start);
@@ -729,15 +805,19 @@ void CookieManager::updateFromSetCookie(std::string_view setCookieHeader, std::s
                     int64_t maxAge = 0;
                     auto [ptr, ec] = std::from_chars(attrVal.data(), attrVal.data() + attrVal.size(), maxAge);
                     if (ec == std::errc{}) {
+                        hasMaxAge = true;
+                        maxAgeVal = maxAge;
                         int64_t nowSec = std::chrono::duration_cast<std::chrono::seconds>(
                                              std::chrono::system_clock::now().time_since_epoch())
                                              .count();
                         entry.expires = nowSec + maxAge;
                     }
                 } else if (startsWithIgnoreCase(attrName, "expires")) {
-                    if (entry.expires == 0) {
-                        int64_t exp = parseHttpDate(attrVal);
-                        if (exp > 0) {
+                    int64_t exp = parseHttpDate(attrVal);
+                    if (exp > 0) {
+                        hasExpires = true;
+                        expiresVal = exp;
+                        if (!hasMaxAge) {
                             entry.expires = exp;
                         }
                     }
@@ -756,21 +836,66 @@ void CookieManager::updateFromSetCookie(std::string_view setCookieHeader, std::s
         start = nextSemi + 1;
     }
 
-    {
-        std::unique_lock lock(m_mutex);
-        indexCookieLocked(entry);
-        m_cookies[{entry.domain, entry.name}] = std::move(entry);
-        m_dirty.store(true, std::memory_order_release);
+    // Lowercase domain
+    for (char &ch : entry.domain) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
-}
 
-void CookieManager::updateFromResponse(const HttpResponse &response) {
-    if (response.setCookies.empty()) {
+    int64_t nowSec = std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+
+    // RFC 6265 cookie deletion detection
+    bool isDeletion = (val.empty() || val == "deleted");
+    if (hasMaxAge && maxAgeVal <= 0) {
+        isDeletion = true;
+    } else if (hasExpires && expiresVal <= nowSec && !hasMaxAge) {
+        isDeletion = true;
+    }
+
+    std::unique_lock lock(m_mutex);
+    if (isDeletion) {
+        std::string bareDomain = entry.domain.starts_with('.') ? entry.domain.substr(1) : entry.domain;
+        std::string dotDomain = "." + bareDomain;
+
+        m_cookies.erase({entry.domain, entry.name});
+        m_cookies.erase({bareDomain, entry.name});
+        m_cookies.erase({dotDomain, entry.name});
+
+        if (entry.domain.find("youtube.com") != std::string::npos &&
+            (isCompanionSessionCookie(entry.name) || entry.name == "SAPISID" || entry.name == "SID")) {
+            m_cookies.erase({".google.com", entry.name});
+            m_cookies.erase({"google.com", entry.name});
+        }
+
+        rebuildIndexLocked();
+        m_dirty.store(true, std::memory_order_release);
         return;
     }
 
-    for (const auto &sc : response.setCookies) {
-        updateFromSetCookie(sc);
+    indexCookieLocked(entry);
+    m_cookies[{entry.domain, entry.name}] = entry;
+
+    // Synchronize rotating companion cookies or session tokens to .google.com if present
+    if (entry.domain.find("youtube.com") != std::string::npos &&
+        (isCompanionSessionCookie(entry.name) || entry.name == "SAPISID" || entry.name == "SID")) {
+        auto googleIt = m_cookies.find({".google.com", entry.name});
+        if (googleIt != m_cookies.end()) {
+            googleIt->second.value = entry.value;
+            googleIt->second.expires = entry.expires;
+            googleIt->second.secure = entry.secure;
+            googleIt->second.httpOnly = entry.httpOnly;
+        }
+    }
+
+    m_dirty.store(true, std::memory_order_release);
+}
+
+void CookieManager::updateFromResponse(const HttpResponse &response) {
+    if (!response.setCookies.empty()) {
+        for (const auto &sc : response.setCookies) {
+            updateFromSetCookie(sc);
+        }
     }
 
     autoSaveIfChanged();
@@ -802,6 +927,23 @@ void CookieManager::autoSaveIfChanged() const {
     }
 }
 
+void CookieManager::flushIfDirty() const {
+    std::string path;
+    {
+        std::shared_lock lock(m_mutex);
+        if (!m_dirty.load(std::memory_order_relaxed) || m_cookieFilePath.empty()) {
+            return;
+        }
+        path = m_cookieFilePath;
+    }
+    if (!path.empty()) {
+        if (saveToFile(lightyt::utils::u8ToPath(path))) {
+            std::unique_lock lock(m_mutex);
+            m_lastAutoSave = std::chrono::steady_clock::now();
+        }
+    }
+}
+
 void CookieManager::clear() noexcept {
     std::unique_lock lock(m_mutex);
     m_cookies.clear();
@@ -810,6 +952,7 @@ void CookieManager::clear() noexcept {
 }
 
 std::string CookieManager::getCookieFilePath() const {
+    flushIfDirty();
     std::shared_lock lock(m_mutex);
     return m_cookieFilePath;
 }

@@ -41,6 +41,7 @@ public:
 signals:
     void videoSelected(const VideoItem &item);
     void videoHovered(const VideoItem &item);
+    void viewFullPlaylistRequested(const VideoItem &item);
     void requestMoreVideos();
 
 protected:

@@ -98,6 +98,9 @@ if(Qt6_FOUND)
         src/ui/MpvGlWidget.cpp
         src/ui/CommentsWidget.cpp
         src/ui/CookieDialog.cpp
+        src/ui/LeftNavDrawer.cpp
+        src/ui/NavSidebar.cpp
+        src/ui/PlaylistPageWidget.cpp
         src/utils/AppSettings.cpp
     )
 
@@ -119,6 +122,32 @@ if(Qt6_FOUND)
         if(NOT LIGHTYT_WIN_CONSOLE)
             set_target_properties(QTYT PROPERTIES WIN32_EXECUTABLE TRUE)
         endif()
+    endif()
+
+    add_executable(test_ui_drawer
+        tests/test_ui_drawer.cpp
+        src/ui/LeftNavDrawer.cpp
+        src/ui/NavSidebar.cpp
+        src/ui/PlaylistPageWidget.cpp
+        src/ui/FeedView.cpp
+        src/ui/FeedModel.cpp
+        src/ui/VideoCardDelegate.cpp
+        src/ui/ThumbnailLoader.cpp
+        src/utils/AppSettings.cpp
+    )
+    target_link_libraries(test_ui_drawer PRIVATE
+        lightyt_core
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Widgets
+        Qt6::Concurrent
+    )
+    if(WIN32)
+        set_target_properties(test_ui_drawer PROPERTIES QT_NO_ENTRYPOINT TRUE)
+    endif()
+    add_test(NAME ui_drawer COMMAND test_ui_drawer)
+    if(WIN32 AND CMAKE_PREFIX_PATH)
+        set_tests_properties(ui_drawer PROPERTIES ENVIRONMENT "PATH=${CMAKE_PREFIX_PATH}/bin;C:/Qt/Tools/mingw1310_64/bin;$ENV{PATH}")
     endif()
 else()
     message(STATUS "Qt6 not found. Built lightyt-cli and test_core successfully.")
